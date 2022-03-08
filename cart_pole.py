@@ -121,7 +121,7 @@ class IntegralWReg(nn.Module):
 class CartPoleTrainer(pl.LightningModule):
     def __init__(self, sys: ControlledCartPole, x_star: th.Tensor, t_span: th.Tensor, max_epochs: int, lr: float = 1e-3):
         super().__init__()
-        self.sys = sys
+        self.sys = ODEProblem(sys, solver="dopri5", sensitivity="autograd", integral_loss=IntegralWReg(sys))
         self.register_buffer("x_star", x_star)
         self.x_star: th.Tensor
         self.register_buffer("t_span", t_span)
@@ -129,7 +129,6 @@ class CartPoleTrainer(pl.LightningModule):
         self.max_epochs = max_epochs
         self.lr = lr
         self.cost_func = IntegralCost(x_star)
-        self.ode_problem = ODEProblem(self.sys, solver="dopri5", sensitivity="autograd", integral_loss=IntegralWReg(self.sys))
 
     def configure_optimizers(self):
         optim = Adam(self.parameters(), lr=self.lr)
@@ -139,12 +138,12 @@ class CartPoleTrainer(pl.LightningModule):
     def forward(self, x0: th.Tensor, t_span: Optional[th.Tensor] = None) -> th.Tensor:
         if t_span is None:
             t_span = self.t_span
-        _, trajectory = self.ode_problem.odeint(x0, t_span)
+        _, trajectory = self.sys.odeint(x0, t_span)
         return trajectory
 
     def training_step(self, batch: th.Tensor, batch_idx: int) -> th.Tensor:
         x0 = batch
-        _, trajectory = self.ode_problem.odeint(x0, t_span)
+        _, trajectory = self.sys.odeint(x0, t_span)
         loss = self.cost_func(trajectory)
 
         self.log("train_loss", loss)
