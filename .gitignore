@@ -220,3 +220,4 @@ octave-workspace
 # End of https://www.toptal.com/developers/gitignore/api/matlab
 
 *.xlsx
+lightning_logs/
