@@ -20,15 +20,12 @@ th.set_default_dtype(th.float64)
 
 class ControlledCartPole(nn.Module):
     """
-    Inverted pendulum with torsional spring
+    Cart pole with a pendulum attached on it.
     """
 
     def __init__(self, u: Callable[[th.Tensor, th.Tensor], th.Tensor]):
         super().__init__()
         self.u = u  # controller (nn.Module)
-        self.nfe = 0  # number of function evaluations
-        self.cur_f = None  # current function evaluation
-        self.cur_u = None  # current controller evaluation
 
         M = 0.5
         m = 0.2
@@ -55,10 +52,9 @@ class ControlledCartPole(nn.Module):
         self.B: th.Tensor
 
     def forward(self, t: th.Tensor, x: th.Tensor) -> th.Tensor:
-        self.nfe += 1
-        self.cur_u = self.u(t, x)
-        self.cur_f = th.matmul(x, self.A.T).T.permute([1, 0]) + th.matmul(self.cur_u, self.B)
-        return self.cur_f
+        cur_u = self.u(t, x)
+        cur_f = th.matmul(x, self.A.T).T.permute([1, 0]) + th.matmul(cur_u, self.B)
+        return cur_f
 
 
 class IntegralCost(nn.Module):
