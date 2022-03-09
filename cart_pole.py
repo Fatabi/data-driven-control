@@ -1,3 +1,4 @@
+import os
 from math import pi
 from typing import Callable, List, Optional
 
@@ -89,7 +90,7 @@ class IntegralCost(nn.Module):
 
 
 class NeuralController(nn.Module):
-    def __init__(self, model: nn.Module, gain: float = 40.0):
+    def __init__(self, model: nn.Module, gain: float = 100.0):
         super().__init__()
         self.model = model
         self.gain = gain
@@ -119,9 +120,17 @@ class IntegralWReg(nn.Module):
 
 
 class CartPoleTrainer(pl.LightningModule):
-    def __init__(self, sys: ControlledCartPole, x_star: th.Tensor, t_span: th.Tensor, max_epochs: int, lr: float = 1e-3):
+    def __init__(
+        self,
+        sys: ControlledCartPole,
+        x_star: th.Tensor,
+        t_span: th.Tensor,
+        max_epochs: int,
+        lr: float = 1e-3,
+        reg_coef: float = 1e-2,
+    ):
         super().__init__()
-        self.sys = ODEProblem(sys, solver="dopri5", sensitivity="autograd", integral_loss=IntegralWReg(sys))
+        self.sys = ODEProblem(sys, solver="dopri5", sensitivity="autograd", integral_loss=IntegralWReg(sys, reg_coef))
         self.register_buffer("x_star", x_star)
         self.x_star: th.Tensor
         self.register_buffer("t_span", t_span)
@@ -178,17 +187,17 @@ if __name__ == "__main__":
     steps = 10 * tf + 1  # so we have a time step of 0.1s
     t_span = th.linspace(t0, tf, steps)
     # Hyperparameters
-    lr = 5e-3
-    max_epochs = 600
-    batch_size = 512
+    lr = 3e-3
+    max_epochs = 1200
+    batch_size = 256
     # Initial distribution
-    lb = [-1, -2, -pi, -pi * 2]
-    ub = [1, 2, pi, pi * 2]
+    lb = [-1, -0.5, -pi, -pi / 2]
+    ub = [1, 0.5, pi, pi / 2]
 
     model = CartPoleTrainer(sys, x_star, t_span, max_epochs, lr)
-    trainer = pl.Trainer(gpus=[0], max_epochs=max_epochs, log_every_n_steps=5)
+    trainer = pl.Trainer(gpus=[0], max_epochs=max_epochs, log_every_n_steps=2)
     dataset = TrajDataset(lb, ub, batch_size)
-    dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=1, persistent_workers=True)
+    dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=max(os.cpu_count() // 2, 1), persistent_workers=True)
     trainer.fit(model, dataloader)
 
     # Testing the controller on the real system
