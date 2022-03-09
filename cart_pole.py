@@ -131,7 +131,7 @@ class CartPoleModel(pl.LightningModule):
         t_span: th.Tensor,
         max_epochs: int,
         lr: float = 1e-3,
-        reg_coef: float = 1e-3,
+        reg_coef: float = 1e-4,
     ):
         super().__init__()
         self.sys = ODEProblem(sys, solver="dopri5", sensitivity="autograd", integral_loss=IntegralWReg(sys, reg_coef))
@@ -144,7 +144,7 @@ class CartPoleModel(pl.LightningModule):
         self.cost_func = IntegralCost(x_star)
 
     def configure_optimizers(self):
-        optim = Adam(self.parameters(), lr=self.lr)
+        optim = Adam(self.parameters(), lr=self.lr, betas=(0.8, 0.99))
         sched = CosineAnnealingLR(optim, T_max=self.max_epochs, eta_min=1e-8)
         return [optim], [sched]
 
@@ -179,7 +179,7 @@ class TrajDataset(Dataset):
 
 
 if __name__ == "__main__":
-    pl.seed_everything(12345)
+    pl.seed_everything(1234)
     u = NeuralController(input_dim=4, output_dim=1, hidden_dims=[128])
     # Controlled system
     sys = ControlledCartPole(u)
@@ -191,8 +191,8 @@ if __name__ == "__main__":
     steps = 10 * tf + 1  # so we have a time step of 0.1s
     t_span = th.linspace(t0, tf, steps)
     # Hyperparameters
-    lr = 1e-2
-    max_epochs = 1200
+    lr = 3e-3
+    max_epochs = 300
     batch_size = 256
     # Initial distribution
     lb = [-1, -0.5, -pi, -pi / 2]
@@ -200,7 +200,7 @@ if __name__ == "__main__":
 
     model = CartPoleModel(sys, x_star, t_span, max_epochs, lr)
     trainer = pl.Trainer(
-        gpus=[0], max_epochs=max_epochs, log_every_n_steps=2, callbacks=[GradientAccumulationScheduler({199: 2})]
+        gpus=[0], max_epochs=max_epochs, log_every_n_steps=2, callbacks=[GradientAccumulationScheduler({max_epochs // 2: 2})]
     )
     dataset = TrajDataset(lb, ub, batch_size)
     dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=max(os.cpu_count() // 2, 1), persistent_workers=True)
@@ -225,6 +225,7 @@ if __name__ == "__main__":
     ax.legend()
     ax.set_title("Controlled trajectories")
     ax.set_xlabel(r"$t~[s]$")
+    plt.savefig("all_trajectories.png", dpi=300)
 
     # Exporting Datas
     traj_0 = th.cat([t_span_fine.unsqueeze(-1), traj[:, 0]], dim=-1)
