@@ -104,11 +104,12 @@ class NeuralController(nn.Module):
 
 
 class ZeroController(nn.Module):
-    def __init__(self):
+    def __init__(self, output_dim: int):
         super().__init__()
+        self.output_dim = output_dim
 
     def forward(self, t: th.Tensor, x: th.Tensor) -> th.Tensor:
-        return th.zeros_like(t)
+        return th.zeros(x.shape[0], self.output_dim, dtype=x.dtype, device=x.device)
 
 
 class IntegralWReg(nn.Module):
@@ -122,7 +123,7 @@ class IntegralWReg(nn.Module):
         return loss
 
 
-class CartPoleTrainer(pl.LightningModule):
+class CartPoleModel(pl.LightningModule):
     def __init__(
         self,
         sys: ControlledCartPole,
@@ -190,14 +191,14 @@ if __name__ == "__main__":
     steps = 10 * tf + 1  # so we have a time step of 0.1s
     t_span = th.linspace(t0, tf, steps)
     # Hyperparameters
-    lr = 4e-3
+    lr = 1e-2
     max_epochs = 1200
     batch_size = 256
     # Initial distribution
     lb = [-1, -0.5, -pi, -pi / 2]
     ub = [1, 0.5, pi, pi / 2]
 
-    model = CartPoleTrainer(sys, x_star, t_span, max_epochs, lr)
+    model = CartPoleModel(sys, x_star, t_span, max_epochs, lr)
     trainer = pl.Trainer(
         gpus=[0], max_epochs=max_epochs, log_every_n_steps=2, callbacks=[GradientAccumulationScheduler({199: 2})]
     )
