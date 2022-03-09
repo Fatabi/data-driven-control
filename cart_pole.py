@@ -7,10 +7,13 @@ import pandas as pd
 import pytorch_lightning as pl
 import torch as th
 import torch.nn as nn
+from pytorch_lightning.callbacks.gradient_accumulation_scheduler import GradientAccumulationScheduler
 from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Dataset
 from torchdyn.core import ODEProblem
+
+from models.mlp import MLP
 
 th.set_default_dtype(th.float64)
 
@@ -90,9 +93,9 @@ class IntegralCost(nn.Module):
 
 
 class NeuralController(nn.Module):
-    def __init__(self, model: nn.Module, gain: float = 100.0):
+    def __init__(self, input_dim: int, output_dim: int, hidden_dims: List[int], gain: float = 100.0):
         super().__init__()
-        self.model = model
+        self.model = MLP(input_dim, output_dim, hidden_dims)
         self.gain = gain
         self.normalizer = nn.Softsign()
 
@@ -127,7 +130,7 @@ class CartPoleTrainer(pl.LightningModule):
         t_span: th.Tensor,
         max_epochs: int,
         lr: float = 1e-3,
-        reg_coef: float = 1e-2,
+        reg_coef: float = 1e-3,
     ):
         super().__init__()
         self.sys = ODEProblem(sys, solver="dopri5", sensitivity="autograd", integral_loss=IntegralWReg(sys, reg_coef))
@@ -168,15 +171,15 @@ class TrajDataset(Dataset):
         self.init_dist = th.distributions.Uniform(th.Tensor(lb), th.Tensor(ub))
 
     def __len__(self) -> int:
-        return self.batch_size * 5
+        return self.batch_size * 6
 
     def __getitem__(self, _: int) -> th.Tensor:
         return self.init_dist.sample((1,)).flatten()
 
 
 if __name__ == "__main__":
-    control_model = nn.Sequential(nn.Linear(4, 128), nn.PReLU(), nn.Linear(128, 1))
-    u = NeuralController(control_model)
+    pl.seed_everything(12345)
+    u = NeuralController(input_dim=4, output_dim=1, hidden_dims=[128])
     # Controlled system
     sys = ControlledCartPole(u)
     # Loss function declaration
@@ -187,7 +190,7 @@ if __name__ == "__main__":
     steps = 10 * tf + 1  # so we have a time step of 0.1s
     t_span = th.linspace(t0, tf, steps)
     # Hyperparameters
-    lr = 3e-3
+    lr = 4e-3
     max_epochs = 1200
     batch_size = 256
     # Initial distribution
@@ -195,7 +198,9 @@ if __name__ == "__main__":
     ub = [1, 0.5, pi, pi / 2]
 
     model = CartPoleTrainer(sys, x_star, t_span, max_epochs, lr)
-    trainer = pl.Trainer(gpus=[0], max_epochs=max_epochs, log_every_n_steps=2)
+    trainer = pl.Trainer(
+        gpus=[0], max_epochs=max_epochs, log_every_n_steps=2, callbacks=[GradientAccumulationScheduler({199: 2})]
+    )
     dataset = TrajDataset(lb, ub, batch_size)
     dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=max(os.cpu_count() // 2, 1), persistent_workers=True)
     trainer.fit(model, dataloader)
