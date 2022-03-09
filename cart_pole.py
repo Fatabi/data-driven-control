@@ -66,32 +66,53 @@ class IntegralCost(nn.Module):
         R: float, controller regulator weights
     """
 
-    def __init__(self, x_star: th.Tensor, P: float = 0.0, Q: float = 1.0, R: float = 0.0):
+    def __init__(
+        self,
+        x_star: th.Tensor,
+        control_dim: int,
+        t0: float,
+        t1: float,
+        P: Optional[th.Tensor] = None,
+        Q: Optional[th.Tensor] = None,
+        R: Optional[th.Tensor] = None,
+    ):
         super().__init__()
         self.register_buffer("x_star", x_star)
         self.x_star: th.Tensor
-        self.P, self.Q, self.R, = (
-            P,
-            Q,
-            R,
-        )
+        self.t0 = t0
+        self.t1 = t1
+        state_dim = x_star.nelement()
+        if P is None:
+            P = th.zeros(state_dim)
+        if Q is None:
+            Q = th.ones(state_dim)
+        if R is None:
+            R = th.zeros(control_dim)
+        self.register_buffer("P", P)
+        self.P: th.Tensor
+        self.register_buffer("Q", Q)
+        self.Q: th.Tensor
+        self.register_buffer("R", R)
+        self.R: th.Tensor
 
-    def forward(self, x: th.Tensor, u: Optional[th.Tensor] = None):
+    def forward(self, t: th.Tensor, x: th.Tensor, u: Optional[th.Tensor] = None):
         """
-        x: trajectory
-        u: control input
+        t: traversed timestamps (t_span)
+        x: trajectory with shape (t_span, batch_size, state_dim)
+        u: control input (t_span, batch_size, control_dim)
         """
-        cost = self.P * th.norm(x[-1] - self.x_star, p=2, dim=-1).mean()
-        cost += self.Q * th.norm(x - self.x_star, p=2, dim=-1).mean()
+        decay_factor = ((t - self.t0) / (self.t1 - self.t0)).clamp(0.0, 1.0)
+        cost = (x[-1] - self.x_star).mul(self.P).norm(p=2, dim=-1).mean()
+        cost += (x - self.x_star).mul(self.Q).norm(p=2, dim=-1).mean(-1).div(decay_factor.sum()).sum()
         if u is not None:
-            cost += self.R * th.norm(u - 0, p=2).mean()
+            cost += (u - 0).mul(self.R).norm(p=2, dim=-1).mean(-1).div(decay_factor.sum()).sum()
         return cost
 
 
 class NeuralController(nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, hidden_dims: List[int], gain: float = 100.0):
+    def __init__(self, state_dim: int, control_dim: int, hidden_dims: List[int], gain: float = 100.0):
         super().__init__()
-        self.model = MLP(input_dim, output_dim, hidden_dims)
+        self.model = MLP(state_dim, control_dim, hidden_dims)
         self.gain = gain
         self.normalizer = nn.Softsign()
 
@@ -100,12 +121,12 @@ class NeuralController(nn.Module):
 
 
 class ZeroController(nn.Module):
-    def __init__(self, output_dim: int):
+    def __init__(self, control_dim: int):
         super().__init__()
-        self.output_dim = output_dim
+        self.control_dim = control_dim
 
     def forward(self, t: th.Tensor, x: th.Tensor) -> th.Tensor:
-        return th.zeros(x.shape[0], self.output_dim, dtype=x.dtype, device=x.device)
+        return th.zeros(x.shape[0], self.control_dim, dtype=x.dtype, device=x.device)
 
 
 class IntegralWReg(nn.Module):
@@ -122,7 +143,6 @@ class IntegralWReg(nn.Module):
 class CartPoleModel(pl.LightningModule):
     def __init__(
         self,
-        sys: ControlledCartPole,
         x_star: th.Tensor,
         t_span: th.Tensor,
         max_epochs: int,
@@ -130,6 +150,11 @@ class CartPoleModel(pl.LightningModule):
         reg_coef: float = 1e-4,
     ):
         super().__init__()
+        state_dim = 4
+        control_dim = 1
+        u = NeuralController(state_dim=state_dim, control_dim=control_dim, hidden_dims=[128])
+        # Controlled system
+        sys = ControlledCartPole(u)
         self.sys = ODEProblem(sys, solver="dopri5", sensitivity="autograd", integral_loss=IntegralWReg(sys, reg_coef))
         self.register_buffer("x_star", x_star)
         self.x_star: th.Tensor
@@ -137,7 +162,7 @@ class CartPoleModel(pl.LightningModule):
         self.t_span: th.Tensor
         self.max_epochs = max_epochs
         self.lr = lr
-        self.cost_func = IntegralCost(x_star)
+        self.cost_func = IntegralCost(x_star, control_dim, t_span[0], t_span[-1], Q=th.tensor([1, 1, 10, 1]))
 
     def configure_optimizers(self):
         optim = Adam(self.parameters(), lr=self.lr, betas=(0.8, 0.99))
@@ -147,13 +172,13 @@ class CartPoleModel(pl.LightningModule):
     def forward(self, x0: th.Tensor, t_span: Optional[th.Tensor] = None) -> th.Tensor:
         if t_span is None:
             t_span = self.t_span
-        _, trajectory = self.sys.odeint(x0, t_span)
-        return trajectory
+        _, traj = self.sys.odeint(x0, t_span)
+        return traj
 
     def training_step(self, batch: th.Tensor, batch_idx: int) -> th.Tensor:
         x0 = batch
-        _, trajectory = self.sys.odeint(x0, t_span)
-        loss = self.cost_func(trajectory)
+        traj_t, traj = self.sys.odeint(x0, t_span)
+        loss = self.cost_func(traj_t, traj)
 
         self.log("train_loss", loss)
         return loss
@@ -176,9 +201,6 @@ class TrajDataset(Dataset):
 
 if __name__ == "__main__":
     pl.seed_everything(1234)
-    u = NeuralController(input_dim=4, output_dim=1, hidden_dims=[128])
-    # Controlled system
-    sys = ControlledCartPole(u)
     # Loss function declaration
     x_star = th.Tensor([0.0, 0.0, pi, 0.0])
 
@@ -193,12 +215,12 @@ if __name__ == "__main__":
     # Initial distribution
     lb = [-1, -0.5, -pi, -pi / 2]
     ub = [1, 0.5, pi, pi / 2]
+    dataset = TrajDataset(lb, ub, batch_size)
 
-    model = CartPoleModel(sys, x_star, t_span, max_epochs, lr)
+    model = CartPoleModel(x_star, t_span, max_epochs, lr)
     trainer = pl.Trainer(
         gpus=[0], max_epochs=max_epochs, log_every_n_steps=2, callbacks=[GradientAccumulationScheduler({max_epochs // 2: 2})]
     )
-    dataset = TrajDataset(lb, ub, batch_size)
     dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=max(os.cpu_count() // 2, 1), persistent_workers=True)
     trainer.fit(model, dataloader)
 
