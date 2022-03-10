@@ -13,7 +13,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Dataset
 from torchdyn.core import ODEProblem
 
-from models.mlp import MLP
+from utils.models import MLP
 
 th.set_default_dtype(th.float64)
 
@@ -88,11 +88,11 @@ class IntegralCost(nn.Module):
             Q = th.ones(state_dim)
         if R is None:
             R = th.zeros(control_dim)
-        self.register_buffer("P", P)
+        self.register_buffer("P", P, persistent=False)
         self.P: th.Tensor
-        self.register_buffer("Q", Q)
+        self.register_buffer("Q", Q, persistent=False)
         self.Q: th.Tensor
-        self.register_buffer("R", R)
+        self.register_buffer("R", R, persistent=False)
         self.R: th.Tensor
 
     def forward(self, t: th.Tensor, x: th.Tensor, u: Optional[th.Tensor] = None):
@@ -102,22 +102,42 @@ class IntegralCost(nn.Module):
         u: control input (t_span, batch_size, control_dim)
         """
         decay_factor = ((t - self.t0) / (self.t1 - self.t0)).clamp(0.0, 1.0)
+        decay_factor_normalized = decay_factor.mul(len(t) / decay_factor.sum()).unsqueeze(-1)
         cost = (x[-1] - self.x_star).mul(self.P).norm(p=2, dim=-1).mean()
-        cost += (x - self.x_star).mul(self.Q).norm(p=2, dim=-1).mean(-1).div(decay_factor.sum()).sum()
+        cost += (x - self.x_star).mul(self.Q).norm(p=2, dim=-1).mul(decay_factor_normalized).mean()
         if u is not None:
-            cost += (u - 0).mul(self.R).norm(p=2, dim=-1).mean(-1).div(decay_factor.sum()).sum()
+            cost += (u - 0).mul(self.R).norm(p=2, dim=-1).mul(decay_factor_normalized).mean()
         return cost
 
 
 class NeuralController(nn.Module):
-    def __init__(self, state_dim: int, control_dim: int, hidden_dims: List[int], gain: float = 100.0):
+    def __init__(
+        self, state_dim: int, control_dim: int, hidden_dims: List[int], gain: float = 100.0, modulo: Optional[th.Tensor] = None
+    ):
         super().__init__()
-        self.model = MLP(state_dim, control_dim, hidden_dims)
         self.gain = gain
+        if modulo is None:
+            modulo = th.tensor([float("nan")] * state_dim)
+        assert len(modulo) == state_dim, "`modulo` argument must be of size `state_dim`"
+        self.register_buffer("modulo", modulo)
+        self.modulo: th.Tensor
+
+        # Pre-calculate some tensors for faster `forward()` calls
+        self.register_buffer("not_mod", self.modulo.isnan(), persistent=False)
+        self.not_mod: th.Tensor
+        self.register_buffer("is_mod", self.not_mod.logical_not(), persistent=False)
+        self.is_mod: th.Tensor
+        self.register_buffer("mod_coef", (2 * pi) / self.modulo[self.is_mod], persistent=False)
+        self.mod_coef: th.Tensor
+
+        self.model = MLP(int(self.not_mod.sum()) + 2 * int(self.is_mod.sum()), control_dim, hidden_dims)
         self.normalizer = nn.Softsign()
 
     def forward(self, t: th.Tensor, x: th.Tensor) -> th.Tensor:
-        return self.normalizer(self.model(x)) * self.gain
+        x_not_mod, x_is_mod = x[..., self.not_mod], x[..., self.is_mod]
+        x_modulo = th.cat([x_not_mod, th.sin(x_is_mod * self.mod_coef), th.cos(x_is_mod * self.mod_coef)], dim=-1)
+        # x_modulo = th.where(self.modulo.isnan(), x, th.remainder(x, self.modulo))  # This is not smooth around 2*pi !!
+        return self.normalizer(self.model(x_modulo)) * self.gain
 
 
 class ZeroController(nn.Module):
@@ -141,6 +161,10 @@ class IntegralWReg(nn.Module):
 
 
 class CartPoleModel(pl.LightningModule):
+    STATE_DIM = 4
+    CONTROL_DIM = 1
+    MODULO = th.tensor([float("nan"), float("nan"), float("nan"), float("nan")])
+
     def __init__(
         self,
         x_star: th.Tensor,
@@ -148,21 +172,20 @@ class CartPoleModel(pl.LightningModule):
         max_epochs: int,
         lr: float = 1e-3,
         reg_coef: float = 1e-4,
+        P: Optional[th.Tensor] = None,
+        Q: Optional[th.Tensor] = None,
+        R: Optional[th.Tensor] = None,
     ):
         super().__init__()
-        state_dim = 4
-        control_dim = 1
-        u = NeuralController(state_dim=state_dim, control_dim=control_dim, hidden_dims=[128])
+        u = NeuralController(state_dim=self.STATE_DIM, control_dim=self.CONTROL_DIM, hidden_dims=[128], modulo=self.MODULO)
         # Controlled system
         sys = ControlledCartPole(u)
         self.sys = ODEProblem(sys, solver="dopri5", sensitivity="autograd", integral_loss=IntegralWReg(sys, reg_coef))
-        self.register_buffer("x_star", x_star)
-        self.x_star: th.Tensor
-        self.register_buffer("t_span", t_span)
+        self.register_buffer("t_span", t_span, persistent=False)
         self.t_span: th.Tensor
         self.max_epochs = max_epochs
         self.lr = lr
-        self.cost_func = IntegralCost(x_star, control_dim, t_span[0], t_span[-1], Q=th.tensor([1, 1, 10, 1]))
+        self.cost_func = IntegralCost(x_star, self.CONTROL_DIM, t_span[0], t_span[-1], P, Q, R)
 
     def configure_optimizers(self):
         optim = Adam(self.parameters(), lr=self.lr, betas=(0.8, 0.99))
@@ -212,12 +235,13 @@ if __name__ == "__main__":
     lr = 3e-3
     max_epochs = 300
     batch_size = 256
+    Q = th.tensor([1.0] * CartPoleModel.STATE_DIM)
     # Initial distribution
     lb = [-1, -0.5, -pi, -pi / 2]
     ub = [1, 0.5, pi, pi / 2]
     dataset = TrajDataset(lb, ub, batch_size)
 
-    model = CartPoleModel(x_star, t_span, max_epochs, lr)
+    model = CartPoleModel(x_star, t_span, max_epochs, lr, Q=Q)
     trainer = pl.Trainer(
         gpus=[0], max_epochs=max_epochs, log_every_n_steps=2, callbacks=[GradientAccumulationScheduler({max_epochs // 2: 2})]
     )
@@ -227,7 +251,7 @@ if __name__ == "__main__":
     # Testing the controller on the real system
     x0 = dataset.init_dist.sample((100,)).to(model.device)
     t0, tf = 0, 10  # initial and final time for controlling the system
-    steps = 10 * tf + 1  # so we have a time step of 0.1s
+    steps = 40 * tf + 1  # so we have a time step of 0.1s
     t_span_fine = th.linspace(t0, tf, steps).to(model.device)
     traj = model.forward(x0, t_span=t_span_fine)
     t_span_fine = t_span_fine.detach().cpu()

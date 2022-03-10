@@ -221,3 +221,5 @@ octave-workspace
 
 *.xlsx
 lightning_logs/
+*.ckpt
+*.png
