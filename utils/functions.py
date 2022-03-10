@@ -28,3 +28,9 @@ class GradMod(th.autograd.Function):
         """
         x, y = ctx.saved_variables
         return grad_output * 1, grad_output * th.neg(th.div(x, y, rounding_mode="trunc"))
+
+
+def tensor_encode_modulo_partial(x: th.Tensor, not_mod: th.Tensor, is_mod: th.Tensor, mod_coef: th.Tensor) -> th.Tensor:
+    x_not_mod, x_is_mod = x[..., not_mod], x[..., is_mod]
+    x_modulo = th.cat([x_not_mod, th.sin(x_is_mod * mod_coef), th.cos(x_is_mod * mod_coef)], dim=-1)
+    return x_modulo

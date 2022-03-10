@@ -1,8 +1,8 @@
-import os
 from math import pi
 from typing import Callable, List, Optional
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
 import torch as th
@@ -11,8 +11,10 @@ from pytorch_lightning.callbacks.gradient_accumulation_scheduler import Gradient
 from torch.optim import Adam
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.tensorboard import SummaryWriter
 from torchdyn.core import ODEProblem
 
+from utils.functions import tensor_encode_modulo_partial
 from utils.models import MLP
 
 th.set_default_dtype(th.float64)
@@ -71,7 +73,7 @@ class IntegralCost(nn.Module):
         x_star: th.Tensor,
         control_dim: int,
         t0: float,
-        t1: float,
+        tf: float,
         P: Optional[th.Tensor] = None,
         Q: Optional[th.Tensor] = None,
         R: Optional[th.Tensor] = None,
@@ -80,7 +82,7 @@ class IntegralCost(nn.Module):
         self.register_buffer("x_star", x_star)
         self.x_star: th.Tensor
         self.t0 = t0
-        self.t1 = t1
+        self.tf = tf
         state_dim = x_star.nelement()
         if P is None:
             P = th.zeros(state_dim)
@@ -101,7 +103,7 @@ class IntegralCost(nn.Module):
         x: trajectory with shape (t_span, batch_size, state_dim)
         u: control input (t_span, batch_size, control_dim)
         """
-        decay_factor = ((t - self.t0) / (self.t1 - self.t0)).clamp(0.0, 1.0)
+        decay_factor = ((t - self.t0) / (self.tf - self.t0)).clamp(0.0, 1.0)
         decay_factor_normalized = decay_factor.mul(len(t) / decay_factor.sum()).unsqueeze(-1)
         cost = (x[-1] - self.x_star).mul(self.P).norm(p=2, dim=-1).mean()
         cost += (x - self.x_star).mul(self.Q).norm(p=2, dim=-1).mul(decay_factor_normalized).mean()
@@ -112,9 +114,17 @@ class IntegralCost(nn.Module):
 
 class NeuralController(nn.Module):
     def __init__(
-        self, state_dim: int, control_dim: int, hidden_dims: List[int], gain: float = 100.0, modulo: Optional[th.Tensor] = None
+        self,
+        x_star: th.Tensor,
+        state_dim: int,
+        control_dim: int,
+        hidden_dims: List[int],
+        gain: float = 100.0,
+        modulo: Optional[th.Tensor] = None,
     ):
         super().__init__()
+        self.register_buffer("x_star", x_star)
+        self.x_star: th.Tensor
         self.gain = gain
         if modulo is None:
             modulo = th.tensor([float("nan")] * state_dim)
@@ -130,14 +140,16 @@ class NeuralController(nn.Module):
         self.register_buffer("mod_coef", (2 * pi) / self.modulo[self.is_mod], persistent=False)
         self.mod_coef: th.Tensor
 
-        self.model = MLP(int(self.not_mod.sum()) + 2 * int(self.is_mod.sum()), control_dim, hidden_dims)
+        self.model = MLP(2 * (int(self.not_mod.sum()) + 2 * int(self.is_mod.sum())), control_dim, hidden_dims)
         self.normalizer = nn.Softsign()
 
     def forward(self, t: th.Tensor, x: th.Tensor) -> th.Tensor:
-        x_not_mod, x_is_mod = x[..., self.not_mod], x[..., self.is_mod]
-        x_modulo = th.cat([x_not_mod, th.sin(x_is_mod * self.mod_coef), th.cos(x_is_mod * self.mod_coef)], dim=-1)
+        x_modulo = tensor_encode_modulo_partial(x, self.not_mod, self.is_mod, self.mod_coef)
+        x_star_modulo = tensor_encode_modulo_partial(self.x_star, self.not_mod, self.is_mod, self.mod_coef).broadcast_to(
+            x_modulo.shape
+        )
         # x_modulo = th.where(self.modulo.isnan(), x, th.remainder(x, self.modulo))  # This is not smooth around 2*pi !!
-        return self.normalizer(self.model(x_modulo)) * self.gain
+        return self.normalizer(self.model(th.cat([x_modulo, x_star_modulo], dim=-1))) * self.gain
 
 
 class ZeroController(nn.Module):
@@ -177,7 +189,9 @@ class CartPoleModel(pl.LightningModule):
         R: Optional[th.Tensor] = None,
     ):
         super().__init__()
-        u = NeuralController(state_dim=self.STATE_DIM, control_dim=self.CONTROL_DIM, hidden_dims=[128], modulo=self.MODULO)
+        u = NeuralController(
+            x_star, state_dim=self.STATE_DIM, control_dim=self.CONTROL_DIM, hidden_dims=[128], modulo=self.MODULO
+        )
         # Controlled system
         sys = ControlledCartPole(u)
         self.sys = ODEProblem(sys, solver="dopri5", sensitivity="autograd", integral_loss=IntegralWReg(sys, reg_coef))
@@ -206,17 +220,43 @@ class CartPoleModel(pl.LightningModule):
         self.log("train_loss", loss)
         return loss
 
+    def validation_step(self, batch: th.Tensor, batch_idx: int):
+        # the logger you used (in this case tensorboard)
+        tensorboard: SummaryWriter = self.logger.experiment
+        x0 = batch
+        t0, tf = self.t_span[0].item(), self.t_span[-1].item()  # initial and final time for controlling the system
+        steps = 40 * int(np.round(tf - t0)) + 1  # so we have a time step of 0.1s
+        t_span_fine = th.linspace(t0, tf, steps).to(model.device)
+        traj = self.forward(x0, t_span=t_span_fine)
+        t_span_fine = t_span_fine.detach().cpu()
+        traj = traj.detach().cpu()
+
+        # Plotting
+        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+        for i in range(len(x0)):
+            ax.plot(t_span_fine, traj[:, i, 0], "k", alpha=0.3, label="x" if i == 0 else None)
+            ax.plot(t_span_fine, traj[:, i, 1], "b", alpha=0.3, label="x_dot" if i == 0 else None)
+            ax.plot(t_span_fine, traj[:, i, 2], "r", alpha=0.3, label="theta" if i == 0 else None)
+            ax.plot(t_span_fine, traj[:, i, 3], "g", alpha=0.3, label="theta_dot" if i == 0 else None)
+        ax.legend()
+        ax.set_title("Controlled trajectories")
+        ax.set_xlabel(r"$t~[s]$")
+        fig.canvas.draw()
+        data = np.asarray(fig.canvas.renderer._renderer).take([0, 1, 2], axis=2)
+        tensorboard.add_image("val_trajectories", th.from_numpy(data).permute([2, 0, 1]), global_step=self.global_step)
+        plt.close(fig)
+
 
 class TrajDataset(Dataset):
-    def __init__(self, lb: List[float], ub: List[float], batch_size: int):
+    def __init__(self, lb: List[float], ub: List[float], traj_cnt: int):
         super().__init__()
         self.lb = lb
         self.ub = ub
-        self.batch_size = batch_size
+        self.traj_cnt = traj_cnt
         self.init_dist = th.distributions.Uniform(th.Tensor(lb), th.Tensor(ub))
 
     def __len__(self) -> int:
-        return self.batch_size * 6
+        return self.traj_cnt
 
     def __getitem__(self, _: int) -> th.Tensor:
         return self.init_dist.sample((1,)).flatten()
@@ -228,30 +268,32 @@ if __name__ == "__main__":
     x_star = th.Tensor([0.0, 0.0, pi, 0.0])
 
     # Time span
-    t0, tf = 0, 2  # initial and final time for controlling the system
-    steps = 10 * tf + 1  # so we have a time step of 0.1s
+    t0, tf = 0, 4  # initial and final time for controlling the system
+    steps = 10 * (tf - t0) + 1  # so we have a time step of 0.1s
     t_span = th.linspace(t0, tf, steps)
     # Hyperparameters
     lr = 3e-3
     max_epochs = 300
-    batch_size = 256
-    Q = th.tensor([1.0] * CartPoleModel.STATE_DIM)
+    batch_size = 128
+    Q = th.tensor([1.0, 1.0, 10.0, 20.0])
     # Initial distribution
-    lb = [-1, -0.5, -pi, -pi / 2]
-    ub = [1, 0.5, pi, pi / 2]
-    dataset = TrajDataset(lb, ub, batch_size)
+    lb = [-1, -0.1, 3 * pi / 4, -pi / 16]
+    ub = [1, 0.1, 5 * pi / 4, pi / 16]
+    train_dataset = TrajDataset(lb, ub, batch_size * 6)
+    val_dataset = TrajDataset(lb, ub, batch_size)
 
     model = CartPoleModel(x_star, t_span, max_epochs, lr, Q=Q)
     trainer = pl.Trainer(
         gpus=[0], max_epochs=max_epochs, log_every_n_steps=2, callbacks=[GradientAccumulationScheduler({max_epochs // 2: 2})]
     )
-    dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=max(os.cpu_count() // 2, 1), persistent_workers=True)
-    trainer.fit(model, dataloader)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, num_workers=2, persistent_workers=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, num_workers=2, persistent_workers=True)
+    trainer.fit(model, train_dataloader, val_dataloader)
 
     # Testing the controller on the real system
-    x0 = dataset.init_dist.sample((100,)).to(model.device)
-    t0, tf = 0, 10  # initial and final time for controlling the system
-    steps = 40 * tf + 1  # so we have a time step of 0.1s
+    x0 = train_dataset.init_dist.sample((100,)).to(model.device)
+    t0, tf = 0, 4  # initial and final time for controlling the system
+    steps = 40 * (tf - t0) + 1  # so we have a time step of 0.1s
     t_span_fine = th.linspace(t0, tf, steps).to(model.device)
     traj = model.forward(x0, t_span=t_span_fine)
     t_span_fine = t_span_fine.detach().cpu()
