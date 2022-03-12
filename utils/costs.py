@@ -6,8 +6,8 @@ import torch.nn as nn
 from utils.functions import get_modulo_parameters, tensor_encode_modulo_partial
 
 
-class IntegralCost(nn.Module):
-    """Integral cost function
+class DiscreteCost(nn.Module):
+    """Discrete cost function
     Args:
         x_star: th.tensor, target position
         P: float, terminal cost weights

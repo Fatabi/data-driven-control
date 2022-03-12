@@ -14,8 +14,8 @@ from torch.utils.tensorboard import SummaryWriter
 from torchdyn.core import ODEProblem
 
 from utils.controllers import NeuralController
-from utils.costs import IntegralCost
-from utils.datasets import TrajDataset
+from utils.costs import DiscreteCost
+from utils.datasets import IcDataset
 from utils.regularizers import IntegralWReg
 from utils.systems import ControlledCartPole
 
@@ -49,7 +49,7 @@ class CartPoleModel(pl.LightningModule):
         self.t_span: th.Tensor
         self.max_epochs = max_epochs
         self.lr = lr
-        self.cost_func = IntegralCost(
+        self.cost_func = DiscreteCost(
             x_star, ControlledCartPole.CONTROL_DIM, t_span[0], t_span[-1], P, Q, R, ControlledCartPole.MODULO
         )
 
@@ -116,8 +116,8 @@ if __name__ == "__main__":
     # Initial distribution
     lb = [-1, -0.1, 3 * pi / 4, -pi / 16]
     ub = [1, 0.1, 5 * pi / 4, pi / 16]
-    train_dataset = TrajDataset(lb, ub, batch_size * 6)
-    val_dataset = TrajDataset(lb, ub, batch_size)
+    train_dataset = IcDataset(lb, ub, batch_size * 6)
+    val_dataset = IcDataset(lb, ub, batch_size)
 
     model = CartPoleModel(x_star, t_span, max_epochs, lr, Q=Q)
     trainer = pl.Trainer(
