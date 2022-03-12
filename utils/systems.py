@@ -1,3 +1,4 @@
+from math import pi
 from typing import Callable
 
 import torch as th
@@ -11,7 +12,7 @@ class ControlledCartPole(nn.Module):
 
     STATE_DIM = 4
     CONTROL_DIM = 1
-    MODULO = th.tensor([float("nan"), float("nan"), float("nan"), float("nan")])
+    MODULO = th.tensor([float("nan"), float("nan"), 2 * pi, float("nan")])
 
     def __init__(
         self,
@@ -56,7 +57,7 @@ class ControlledPendulum(nn.Module):
 
     STATE_DIM = 2
     CONTROL_DIM = 1
-    MODULO = th.tensor([float("nan"), float("nan")])
+    MODULO = th.tensor([2 * pi, float("nan")])
 
     def __init__(
         self,

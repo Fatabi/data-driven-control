@@ -3,7 +3,7 @@ from typing import Optional
 import torch as th
 import torch.nn as nn
 
-from utils.functions import get_modulo_parameters, tensor_encode_modulo_partial
+from utils.functions import get_modulo_parameters, tensor_encode_modulo_partial, tensor_modulo_partial_shuffle
 
 
 class DiscreteCost(nn.Module):
@@ -30,18 +30,6 @@ class DiscreteCost(nn.Module):
         self.t0 = t0
         self.tf = tf
         state_dim = x_star.nelement()
-        if P is None:
-            P = th.zeros(state_dim)
-        if Q is None:
-            Q = th.ones(state_dim)
-        if R is None:
-            R = th.zeros(control_dim)
-        self.register_buffer("P", P, persistent=False)
-        self.P: th.Tensor
-        self.register_buffer("Q", Q, persistent=False)
-        self.Q: th.Tensor
-        self.register_buffer("R", R, persistent=False)
-        self.R: th.Tensor
 
         if modulo is None:
             modulo = th.tensor([float("nan")] * state_dim)
@@ -57,6 +45,19 @@ class DiscreteCost(nn.Module):
         self.is_mod: th.Tensor
         self.register_buffer("mod_coef", mod_coef, persistent=False)
         self.mod_coef: th.Tensor
+
+        if P is None:
+            P = th.zeros(state_dim)
+        if Q is None:
+            Q = th.ones(state_dim)
+        if R is None:
+            R = th.zeros(control_dim)
+        self.register_buffer("P", tensor_modulo_partial_shuffle(P, not_mod, is_mod), persistent=False)
+        self.P: th.Tensor
+        self.register_buffer("Q", tensor_modulo_partial_shuffle(Q, not_mod, is_mod), persistent=False)
+        self.Q: th.Tensor
+        self.register_buffer("R", R, persistent=False)
+        self.R: th.Tensor
 
         x_star = tensor_encode_modulo_partial(x_star, not_mod, is_mod, mod_coef)
         self.register_buffer("x_star", x_star)
