@@ -36,20 +36,28 @@ class CartPoleModel(pl.LightningModule):
     ):
         super().__init__()
         u = NeuralController(
+            x_star=x_star,
             state_dim=ControlledCartPole.STATE_DIM,
             control_dim=ControlledCartPole.CONTROL_DIM,
             hidden_dims=[64, 64],
             modulo=ControlledCartPole.MODULO,
         )
         # Controlled system
-        sys = ControlledCartPole(u, x_star)
+        sys = ControlledCartPole(u=u)
         self.sys = ODEProblem(sys, solver="dopri5", sensitivity="autograd", integral_loss=IntegralWReg(sys, reg_coef))
         self.register_buffer("t_span", t_span, persistent=False)
         self.t_span: th.Tensor
         self.max_epochs = max_epochs
         self.lr = lr
         self.cost_func = DiscreteCost(
-            x_star, ControlledCartPole.CONTROL_DIM, t_span[0], t_span[-1], P, Q, R, ControlledCartPole.MODULO
+            x_star=x_star,
+            control_dim=ControlledCartPole.CONTROL_DIM,
+            t0=t_span[0],
+            tf=t_span[-1],
+            P=P,
+            Q=Q,
+            R=R,
+            # modulo=ControlledCartPole.MODULO,
         )
 
     def configure_optimizers(self):
@@ -111,14 +119,14 @@ if __name__ == "__main__":
     lr = 1e-2
     max_epochs = 300
     batch_size = 128
-    Q = th.tensor([1.0, 1.0, 10.0, 20.0])
+    Q = th.tensor([1.0, 1.0, 2.0, 1.0])
     # Initial distribution
-    lb = [-1, -0.1, 3 * pi / 4, -pi / 16]
-    ub = [1, 0.1, 5 * pi / 4, pi / 16]
-    train_dataset = IcDataset(lb, ub, batch_size * 6)
-    val_dataset = IcDataset(lb, ub, batch_size)
+    lb = [-0.1, -0.0001, 3 * pi / 4, -pi / 64]
+    ub = [0.1, 0.0001, 5 * pi / 4, pi / 64]
+    train_dataset = IcDataset(lb=lb, ub=ub, ic_cnt=batch_size * 6)
+    val_dataset = IcDataset(lb=lb, ub=ub, ic_cnt=batch_size)
 
-    model = CartPoleModel(x_star, t_span, max_epochs, lr, Q=Q)
+    model = CartPoleModel(x_star=x_star, t_span=t_span, max_epochs=max_epochs, lr=lr, Q=Q)
     trainer = pl.Trainer(
         gpus=[0], max_epochs=max_epochs, log_every_n_steps=2, callbacks=[GradientAccumulationScheduler({max_epochs // 2: 2})]
     )

@@ -17,7 +17,6 @@ class ControlledCartPole(nn.Module):
     def __init__(
         self,
         u: Callable[[th.Tensor, th.Tensor, th.Tensor], th.Tensor],
-        x_star: th.Tensor,
         M: float = 0.5,
         m: float = 0.2,
         b: float = 0.1,
@@ -27,8 +26,6 @@ class ControlledCartPole(nn.Module):
     ):
         super().__init__()
         self.u = u  # controller (nn.Module)
-        self.register_buffer("x_star", x_star)
-        self.x_star: th.Tensor
 
         p = inertia * (M + m) + M * m * length**2  # denominator for the A and B matrices
 
@@ -48,7 +45,7 @@ class ControlledCartPole(nn.Module):
         self.B: th.Tensor
 
     def forward(self, t: th.Tensor, x: th.Tensor) -> th.Tensor:
-        cur_u = self.u(t, x, self.x_star)
+        cur_u = self.u(t, x)
         cur_f = th.matmul(x, self.A.T).T.permute([1, 0]) + th.matmul(cur_u, self.B)
         return cur_f
 
@@ -65,7 +62,6 @@ class ControlledPendulum(nn.Module):
     def __init__(
         self,
         u: Callable[[th.Tensor, th.Tensor, th.Tensor], th.Tensor],
-        x_star: th.Tensor,
         m: float = 1.0,
         k: float = 0.5,
         length: float = 1.0,
@@ -75,13 +71,11 @@ class ControlledPendulum(nn.Module):
     ):
         super().__init__()
         self.u = u  # controller (nn.Module)
-        self.register_buffer("x_star", x_star)
-        self.x_star: th.Tensor
         self.m, self.k, self.l, self.qr, self.β, self.g = m, k, length, qr, β, g  # physics
 
     def forward(self, t: th.Tensor, x: th.Tensor) -> th.Tensor:
         q, p = x[..., :1], x[..., 1:]
-        cur_u = self.u(t, x, self.x_star)
+        cur_u = self.u(t, x)
         dq = p / self.m
         dp = -self.k * (q - self.qr) - self.m * self.g * self.l * th.sin(q) - self.β * p / self.m + cur_u
         cur_f = th.cat([dq, dp], -1)

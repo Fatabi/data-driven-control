@@ -10,6 +10,7 @@ from utils.models import MLP
 class NeuralController(nn.Module):
     def __init__(
         self,
+        x_star: th.Tensor,
         state_dim: int,
         control_dim: int,
         hidden_dims: List[int],
@@ -17,6 +18,8 @@ class NeuralController(nn.Module):
         modulo: Optional[th.Tensor] = None,
     ):
         super().__init__()
+        self.register_buffer("x_star", x_star)
+        self.x_star: th.Tensor
         self.gain = gain
         if modulo is None:
             modulo = th.tensor([float("nan")] * state_dim)
@@ -37,9 +40,9 @@ class NeuralController(nn.Module):
         self.model = MLP(2 * x_mod_dim, control_dim, hidden_dims)
         self.normalizer = nn.Softsign()
 
-    def forward(self, t: th.Tensor, x: th.Tensor, x_star: th.Tensor) -> th.Tensor:
+    def forward(self, t: th.Tensor, x: th.Tensor) -> th.Tensor:
         x_modulo = tensor_encode_modulo_partial(x, self.not_mod, self.is_mod, self.mod_coef)
-        x_star_modulo = tensor_encode_modulo_partial(x_star, self.not_mod, self.is_mod, self.mod_coef).broadcast_to(
+        x_star_modulo = tensor_encode_modulo_partial(self.x_star, self.not_mod, self.is_mod, self.mod_coef).broadcast_to(
             x_modulo.shape
         )
         # x_modulo = th.where(self.modulo.isnan(), x, th.remainder(x, self.modulo))  # This is not smooth around 2*pi !!
