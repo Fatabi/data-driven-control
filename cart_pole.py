@@ -9,12 +9,12 @@ import torch as th
 import torch.nn as nn
 from pytorch_lightning.callbacks.gradient_accumulation_scheduler import GradientAccumulationScheduler
 from torch.optim import Adam
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from torchdyn.core import ODEProblem
 
-from utils.functions import tensor_encode_modulo_partial
+from utils.functions import get_modulo_parameters, tensor_encode_modulo_partial
 from utils.models import MLP
 
 th.set_default_dtype(th.float64)
@@ -77,10 +77,9 @@ class IntegralCost(nn.Module):
         P: Optional[th.Tensor] = None,
         Q: Optional[th.Tensor] = None,
         R: Optional[th.Tensor] = None,
+        modulo: Optional[th.Tensor] = None,
     ):
         super().__init__()
-        self.register_buffer("x_star", x_star)
-        self.x_star: th.Tensor
         self.t0 = t0
         self.tf = tf
         state_dim = x_star.nelement()
@@ -97,12 +96,32 @@ class IntegralCost(nn.Module):
         self.register_buffer("R", R, persistent=False)
         self.R: th.Tensor
 
+        if modulo is None:
+            modulo = th.tensor([float("nan")] * state_dim)
+        assert len(modulo) == state_dim, "`modulo` argument must be of size `state_dim`"
+        self.register_buffer("modulo", modulo)
+        self.modulo: th.Tensor
+
+        # Pre-calculate some tensors for faster `forward()` calls
+        not_mod, is_mod, mod_coef = get_modulo_parameters(modulo)
+        self.register_buffer("not_mod", not_mod, persistent=False)
+        self.not_mod: th.Tensor
+        self.register_buffer("is_mod", is_mod, persistent=False)
+        self.is_mod: th.Tensor
+        self.register_buffer("mod_coef", mod_coef, persistent=False)
+        self.mod_coef: th.Tensor
+
+        x_star = tensor_encode_modulo_partial(x_star, not_mod, is_mod, mod_coef)
+        self.register_buffer("x_star", x_star)
+        self.x_star: th.Tensor
+
     def forward(self, t: th.Tensor, x: th.Tensor, u: Optional[th.Tensor] = None):
         """
         t: traversed timestamps (t_span)
         x: trajectory with shape (t_span, batch_size, state_dim)
         u: control input (t_span, batch_size, control_dim)
         """
+        x = tensor_encode_modulo_partial(x, self.not_mod, self.is_mod, self.mod_coef)
         decay_factor = ((t - self.t0) / (self.tf - self.t0)).clamp(0.0, 1.0)
         decay_factor_normalized = decay_factor.mul(len(t) / decay_factor.sum()).unsqueeze(-1)
         cost = (x[-1] - self.x_star).mul(self.P).norm(p=2, dim=-1).mean()
@@ -133,11 +152,12 @@ class NeuralController(nn.Module):
         self.modulo: th.Tensor
 
         # Pre-calculate some tensors for faster `forward()` calls
-        self.register_buffer("not_mod", self.modulo.isnan(), persistent=False)
+        not_mod, is_mod, mod_coef = get_modulo_parameters(modulo)
+        self.register_buffer("not_mod", not_mod, persistent=False)
         self.not_mod: th.Tensor
-        self.register_buffer("is_mod", self.not_mod.logical_not(), persistent=False)
+        self.register_buffer("is_mod", is_mod, persistent=False)
         self.is_mod: th.Tensor
-        self.register_buffer("mod_coef", (2 * pi) / self.modulo[self.is_mod], persistent=False)
+        self.register_buffer("mod_coef", mod_coef, persistent=False)
         self.mod_coef: th.Tensor
 
         self.model = MLP(2 * (int(self.not_mod.sum()) + 2 * int(self.is_mod.sum())), control_dim, hidden_dims)
@@ -190,7 +210,7 @@ class CartPoleModel(pl.LightningModule):
     ):
         super().__init__()
         u = NeuralController(
-            x_star, state_dim=self.STATE_DIM, control_dim=self.CONTROL_DIM, hidden_dims=[128], modulo=self.MODULO
+            x_star, state_dim=self.STATE_DIM, control_dim=self.CONTROL_DIM, hidden_dims=[64, 64], modulo=self.MODULO
         )
         # Controlled system
         sys = ControlledCartPole(u)
@@ -199,12 +219,12 @@ class CartPoleModel(pl.LightningModule):
         self.t_span: th.Tensor
         self.max_epochs = max_epochs
         self.lr = lr
-        self.cost_func = IntegralCost(x_star, self.CONTROL_DIM, t_span[0], t_span[-1], P, Q, R)
+        self.cost_func = IntegralCost(x_star, self.CONTROL_DIM, t_span[0], t_span[-1], P, Q, R, self.MODULO)
 
     def configure_optimizers(self):
         optim = Adam(self.parameters(), lr=self.lr, betas=(0.8, 0.99))
-        sched = CosineAnnealingLR(optim, T_max=self.max_epochs, eta_min=1e-8)
-        return [optim], [sched]
+        sched = ReduceLROnPlateau(optim, "min", 0.5, 3)
+        return {"optimizer": optim, "lr_scheduler": sched, "monitor": "train_loss"}
 
     def forward(self, x0: th.Tensor, t_span: Optional[th.Tensor] = None) -> th.Tensor:
         if t_span is None:
@@ -272,7 +292,7 @@ if __name__ == "__main__":
     steps = 10 * (tf - t0) + 1  # so we have a time step of 0.1s
     t_span = th.linspace(t0, tf, steps)
     # Hyperparameters
-    lr = 3e-3
+    lr = 1e-2
     max_epochs = 300
     batch_size = 128
     Q = th.tensor([1.0, 1.0, 10.0, 20.0])
@@ -286,8 +306,8 @@ if __name__ == "__main__":
     trainer = pl.Trainer(
         gpus=[0], max_epochs=max_epochs, log_every_n_steps=2, callbacks=[GradientAccumulationScheduler({max_epochs // 2: 2})]
     )
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, num_workers=2, persistent_workers=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, num_workers=2, persistent_workers=True)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, num_workers=1, persistent_workers=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, num_workers=1, persistent_workers=True)
     trainer.fit(model, train_dataloader, val_dataloader)
 
     # Testing the controller on the real system

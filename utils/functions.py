@@ -1,3 +1,6 @@
+from math import pi
+from typing import Tuple
+
 import torch as th
 
 
@@ -28,6 +31,13 @@ class GradMod(th.autograd.Function):
         """
         x, y = ctx.saved_variables
         return grad_output * 1, grad_output * th.neg(th.div(x, y, rounding_mode="trunc"))
+
+
+def get_modulo_parameters(modulo: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+    not_mod = modulo.isnan()
+    is_mod = not_mod.logical_not()
+    mod_coef = (2 * pi) / modulo[is_mod]
+    return not_mod, is_mod, mod_coef
 
 
 def tensor_encode_modulo_partial(x: th.Tensor, not_mod: th.Tensor, is_mod: th.Tensor, mod_coef: th.Tensor) -> th.Tensor:
