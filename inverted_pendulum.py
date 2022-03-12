@@ -32,14 +32,13 @@ bs = 1024
 
 # The controller is a simple MLP with one hidden layer with bounded output
 u = NeuralController(
-    x_star,
     state_dim=ControlledPendulum.STATE_DIM,
     control_dim=ControlledPendulum.CONTROL_DIM,
     hidden_dims=[32],
     modulo=ControlledPendulum.MODULO,
 )
 # Controlled system
-sys = ControlledPendulum(u).to(device)
+sys = ControlledPendulum(u, x_star).to(device)
 opt = th.optim.Adam(u.parameters(), lr=lr)
 
 cost_func = DiscreteCost(x_star, ControlledPendulum.CONTROL_DIM, t_span[0], t_span[-1], modulo=ControlledPendulum.MODULO)

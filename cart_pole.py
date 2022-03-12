@@ -36,14 +36,13 @@ class CartPoleModel(pl.LightningModule):
     ):
         super().__init__()
         u = NeuralController(
-            x_star,
             state_dim=ControlledCartPole.STATE_DIM,
             control_dim=ControlledCartPole.CONTROL_DIM,
             hidden_dims=[64, 64],
             modulo=ControlledCartPole.MODULO,
         )
         # Controlled system
-        sys = ControlledCartPole(u)
+        sys = ControlledCartPole(u, x_star)
         self.sys = ODEProblem(sys, solver="dopri5", sensitivity="autograd", integral_loss=IntegralWReg(sys, reg_coef))
         self.register_buffer("t_span", t_span, persistent=False)
         self.t_span: th.Tensor
