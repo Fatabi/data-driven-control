@@ -11,5 +11,5 @@ class IntegralWReg(nn.Module):
         self.reg_coef = reg_coef
 
     def forward(self, t: th.Tensor, x: th.Tensor) -> th.Tensor:
-        loss = self.reg_coef * th.abs(self.sys(x)).sum(1)
+        loss = self.reg_coef * th.abs(self.sys(t, x)).sum(1)
         return loss
