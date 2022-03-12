@@ -1,199 +1,25 @@
 from math import pi
-from typing import Callable, List, Optional
+from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
 import torch as th
-import torch.nn as nn
 from pytorch_lightning.callbacks.gradient_accumulation_scheduler import GradientAccumulationScheduler
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchdyn.core import ODEProblem
 
-from utils.functions import get_modulo_parameters, tensor_encode_modulo_partial
-from utils.models import MLP
+from utils.controllers import NeuralController
+from utils.costs import IntegralCost
+from utils.datasets import TrajDataset
+from utils.regularizers import IntegralWReg
+from utils.systems import ControlledCartPole
 
 th.set_default_dtype(th.float64)
-
-
-class ControlledCartPole(nn.Module):
-    """
-    Cart pole with a pendulum attached on it.
-    """
-
-    STATE_DIM = 4
-    CONTROL_DIM = 1
-    MODULO = th.tensor([float("nan"), float("nan"), float("nan"), float("nan")])
-
-    def __init__(self, u: Callable[[th.Tensor, th.Tensor], th.Tensor]):
-        super().__init__()
-        self.u = u  # controller (nn.Module)
-
-        M = 0.5
-        m = 0.2
-        b = 0.1
-        inertia = 0.006
-        g = 9.8
-        length = 0.3
-
-        p = inertia * (M + m) + M * m * length**2  # denominator for the A and B matrices
-
-        self.register_buffer(
-            "A",
-            th.tensor(
-                [
-                    [0, 1, 0, 0],
-                    [0, -(inertia + m * length**2) * b / p, (m**2 * g * length**2) / p, 0],
-                    [0, 0, 0, 1],
-                    [0, -(m * length * b) / p, m * g * length * (M + m) / p, 0],
-                ]
-            ),
-        )
-        self.A: th.Tensor
-        self.register_buffer("B", th.tensor([[0, (inertia + m * length**2) / p, 0, m * length / p]]))
-        self.B: th.Tensor
-
-    def forward(self, t: th.Tensor, x: th.Tensor) -> th.Tensor:
-        cur_u = self.u(t, x)
-        cur_f = th.matmul(x, self.A.T).T.permute([1, 0]) + th.matmul(cur_u, self.B)
-        return cur_f
-
-
-class IntegralCost(nn.Module):
-    """Integral cost function
-    Args:
-        x_star: th.tensor, target position
-        P: float, terminal cost weights
-        Q: float, state weights
-        R: float, controller regulator weights
-    """
-
-    def __init__(
-        self,
-        x_star: th.Tensor,
-        control_dim: int,
-        t0: float,
-        tf: float,
-        P: Optional[th.Tensor] = None,
-        Q: Optional[th.Tensor] = None,
-        R: Optional[th.Tensor] = None,
-        modulo: Optional[th.Tensor] = None,
-    ):
-        super().__init__()
-        self.t0 = t0
-        self.tf = tf
-        state_dim = x_star.nelement()
-        if P is None:
-            P = th.zeros(state_dim)
-        if Q is None:
-            Q = th.ones(state_dim)
-        if R is None:
-            R = th.zeros(control_dim)
-        self.register_buffer("P", P, persistent=False)
-        self.P: th.Tensor
-        self.register_buffer("Q", Q, persistent=False)
-        self.Q: th.Tensor
-        self.register_buffer("R", R, persistent=False)
-        self.R: th.Tensor
-
-        if modulo is None:
-            modulo = th.tensor([float("nan")] * state_dim)
-        assert len(modulo) == state_dim, "`modulo` argument must be of size `state_dim`"
-        self.register_buffer("modulo", modulo)
-        self.modulo: th.Tensor
-
-        # Pre-calculate some tensors for faster `forward()` calls
-        not_mod, is_mod, mod_coef = get_modulo_parameters(modulo)
-        self.register_buffer("not_mod", not_mod, persistent=False)
-        self.not_mod: th.Tensor
-        self.register_buffer("is_mod", is_mod, persistent=False)
-        self.is_mod: th.Tensor
-        self.register_buffer("mod_coef", mod_coef, persistent=False)
-        self.mod_coef: th.Tensor
-
-        x_star = tensor_encode_modulo_partial(x_star, not_mod, is_mod, mod_coef)
-        self.register_buffer("x_star", x_star)
-        self.x_star: th.Tensor
-
-    def forward(self, t: th.Tensor, x: th.Tensor, u: Optional[th.Tensor] = None):
-        """
-        t: traversed timestamps (t_span)
-        x: trajectory with shape (t_span, batch_size, state_dim)
-        u: control input (t_span, batch_size, control_dim)
-        """
-        x = tensor_encode_modulo_partial(x, self.not_mod, self.is_mod, self.mod_coef)
-        decay_factor = ((t - self.t0) / (self.tf - self.t0)).clamp(0.0, 1.0)
-        decay_factor_normalized = decay_factor.mul(len(t) / decay_factor.sum()).unsqueeze(-1)
-        cost = (x[-1] - self.x_star).mul(self.P).norm(p=2, dim=-1).mean()
-        cost += (x - self.x_star).mul(self.Q).norm(p=2, dim=-1).mul(decay_factor_normalized).mean()
-        if u is not None:
-            cost += (u - 0).mul(self.R).norm(p=2, dim=-1).mul(decay_factor_normalized).mean()
-        return cost
-
-
-class NeuralController(nn.Module):
-    def __init__(
-        self,
-        x_star: th.Tensor,
-        state_dim: int,
-        control_dim: int,
-        hidden_dims: List[int],
-        gain: float = 100.0,
-        modulo: Optional[th.Tensor] = None,
-    ):
-        super().__init__()
-        self.register_buffer("x_star", x_star)
-        self.x_star: th.Tensor
-        self.gain = gain
-        if modulo is None:
-            modulo = th.tensor([float("nan")] * state_dim)
-        assert len(modulo) == state_dim, "`modulo` argument must be of size `state_dim`"
-        self.register_buffer("modulo", modulo)
-        self.modulo: th.Tensor
-
-        # Pre-calculate some tensors for faster `forward()` calls
-        not_mod, is_mod, mod_coef = get_modulo_parameters(modulo)
-        self.register_buffer("not_mod", not_mod, persistent=False)
-        self.not_mod: th.Tensor
-        self.register_buffer("is_mod", is_mod, persistent=False)
-        self.is_mod: th.Tensor
-        self.register_buffer("mod_coef", mod_coef, persistent=False)
-        self.mod_coef: th.Tensor
-
-        self.model = MLP(2 * (int(self.not_mod.sum()) + 2 * int(self.is_mod.sum())), control_dim, hidden_dims)
-        self.normalizer = nn.Softsign()
-
-    def forward(self, t: th.Tensor, x: th.Tensor) -> th.Tensor:
-        x_modulo = tensor_encode_modulo_partial(x, self.not_mod, self.is_mod, self.mod_coef)
-        x_star_modulo = tensor_encode_modulo_partial(self.x_star, self.not_mod, self.is_mod, self.mod_coef).broadcast_to(
-            x_modulo.shape
-        )
-        # x_modulo = th.where(self.modulo.isnan(), x, th.remainder(x, self.modulo))  # This is not smooth around 2*pi !!
-        return self.normalizer(self.model(th.cat([x_modulo, x_star_modulo], dim=-1))) * self.gain
-
-
-class ZeroController(nn.Module):
-    def __init__(self, control_dim: int):
-        super().__init__()
-        self.control_dim = control_dim
-
-    def forward(self, t: th.Tensor, x: th.Tensor) -> th.Tensor:
-        return th.zeros(x.shape[0], self.control_dim, dtype=x.dtype, device=x.device)
-
-
-class IntegralWReg(nn.Module):
-    def __init__(self, sys: Callable[[th.Tensor, th.Tensor], th.Tensor], reg_coef: float = 1e-4):
-        super().__init__()
-        self.sys = sys
-        self.reg_coef = reg_coef
-
-    def forward(self, t: th.Tensor, x: th.Tensor) -> th.Tensor:
-        loss = self.reg_coef * th.abs(self.sys(x)).sum(1)
-        return loss
 
 
 class CartPoleModel(pl.LightningModule):
@@ -271,21 +97,6 @@ class CartPoleModel(pl.LightningModule):
         data = np.asarray(fig.canvas.renderer._renderer).take([0, 1, 2], axis=2)
         tensorboard.add_image("val_trajectories", th.from_numpy(data).permute([2, 0, 1]), global_step=self.global_step)
         plt.close(fig)
-
-
-class TrajDataset(Dataset):
-    def __init__(self, lb: List[float], ub: List[float], traj_cnt: int):
-        super().__init__()
-        self.lb = lb
-        self.ub = ub
-        self.traj_cnt = traj_cnt
-        self.init_dist = th.distributions.Uniform(th.Tensor(lb), th.Tensor(ub))
-
-    def __len__(self) -> int:
-        return self.traj_cnt
-
-    def __getitem__(self, _: int) -> th.Tensor:
-        return self.init_dist.sample((1,)).flatten()
 
 
 if __name__ == "__main__":
