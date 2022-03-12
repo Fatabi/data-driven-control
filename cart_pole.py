@@ -25,6 +25,10 @@ class ControlledCartPole(nn.Module):
     Cart pole with a pendulum attached on it.
     """
 
+    STATE_DIM = 4
+    CONTROL_DIM = 1
+    MODULO = th.tensor([float("nan"), float("nan"), float("nan"), float("nan")])
+
     def __init__(self, u: Callable[[th.Tensor, th.Tensor], th.Tensor]):
         super().__init__()
         self.u = u  # controller (nn.Module)
@@ -193,10 +197,6 @@ class IntegralWReg(nn.Module):
 
 
 class CartPoleModel(pl.LightningModule):
-    STATE_DIM = 4
-    CONTROL_DIM = 1
-    MODULO = th.tensor([float("nan"), float("nan"), float("nan"), float("nan")])
-
     def __init__(
         self,
         x_star: th.Tensor,
@@ -210,7 +210,11 @@ class CartPoleModel(pl.LightningModule):
     ):
         super().__init__()
         u = NeuralController(
-            x_star, state_dim=self.STATE_DIM, control_dim=self.CONTROL_DIM, hidden_dims=[64, 64], modulo=self.MODULO
+            x_star,
+            state_dim=ControlledCartPole.STATE_DIM,
+            control_dim=ControlledCartPole.CONTROL_DIM,
+            hidden_dims=[64, 64],
+            modulo=ControlledCartPole.MODULO,
         )
         # Controlled system
         sys = ControlledCartPole(u)
@@ -219,7 +223,9 @@ class CartPoleModel(pl.LightningModule):
         self.t_span: th.Tensor
         self.max_epochs = max_epochs
         self.lr = lr
-        self.cost_func = IntegralCost(x_star, self.CONTROL_DIM, t_span[0], t_span[-1], P, Q, R, self.MODULO)
+        self.cost_func = IntegralCost(
+            x_star, ControlledCartPole.CONTROL_DIM, t_span[0], t_span[-1], P, Q, R, ControlledCartPole.MODULO
+        )
 
     def configure_optimizers(self):
         optim = Adam(self.parameters(), lr=self.lr, betas=(0.8, 0.99))
