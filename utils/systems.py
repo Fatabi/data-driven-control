@@ -13,16 +13,18 @@ class ControlledCartPole(nn.Module):
     CONTROL_DIM = 1
     MODULO = th.tensor([float("nan"), float("nan"), float("nan"), float("nan")])
 
-    def __init__(self, u: Callable[[th.Tensor, th.Tensor], th.Tensor]):
+    def __init__(
+        self,
+        u: Callable[[th.Tensor, th.Tensor], th.Tensor],
+        M: float = 0.5,
+        m: float = 0.2,
+        b: float = 0.1,
+        inertia: float = 0.006,
+        g: float = 9.81,
+        length: float = 0.3,
+    ):
         super().__init__()
         self.u = u  # controller (nn.Module)
-
-        M = 0.5
-        m = 0.2
-        b = 0.1
-        inertia = 0.006
-        g = 9.8
-        length = 0.3
 
         p = inertia * (M + m) + M * m * length**2  # denominator for the A and B matrices
 
@@ -56,19 +58,24 @@ class ControlledPendulum(nn.Module):
     CONTROL_DIM = 1
     MODULO = th.tensor([float("nan"), float("nan")])
 
-    def __init__(self, u, m=1.0, k=0.5, length=1.0, qr=0.0, β=0.01, g=9.81):
+    def __init__(
+        self,
+        u: Callable[[th.Tensor, th.Tensor], th.Tensor],
+        m: float = 1.0,
+        k: float = 0.5,
+        length: float = 1.0,
+        qr: float = 0.0,
+        β: float = 0.01,
+        g: float = 9.81,
+    ):
         super().__init__()
         self.u = u  # controller (nn.Module)
-        self.nfe = 0  # number of function evaluations
-        self.cur_f = None  # current function evaluation
-        self.cur_u = None  # current controller evaluation
         self.m, self.k, self.l, self.qr, self.β, self.g = m, k, length, qr, β, g  # physics
 
-    def forward(self, t, x):
-        self.nfe += 1
+    def forward(self, t: th.Tensor, x: th.Tensor) -> th.Tensor:
         q, p = x[..., :1], x[..., 1:]
-        self.cur_u = self.u(t, x)
+        cur_u = self.u(t, x)
         dq = p / self.m
-        dp = -self.k * (q - self.qr) - self.m * self.g * self.l * th.sin(q) - self.β * p / self.m + self.cur_u
-        self.cur_f = th.cat([dq, dp], -1)
-        return self.cur_f
+        dp = -self.k * (q - self.qr) - self.m * self.g * self.l * th.sin(q) - self.β * p / self.m + cur_u
+        cur_f = th.cat([dq, dp], -1)
+        return cur_f
