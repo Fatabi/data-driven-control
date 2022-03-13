@@ -40,13 +40,13 @@ def get_modulo_parameters(modulo: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.T
     return not_mod, is_mod, mod_coef
 
 
-def tensor_encode_modulo_partial(x: th.Tensor, not_mod: th.Tensor, is_mod: th.Tensor, mod_coef: th.Tensor) -> th.Tensor:
-    x_not_mod, x_is_mod = x[..., not_mod], x[..., is_mod]
-    x_modulo = th.cat([x_not_mod, th.sin(x_is_mod * mod_coef), th.cos(x_is_mod * mod_coef)], dim=-1)
-    return x_modulo
+def tensor_encode_modulo_partial(X: th.Tensor, not_mod: th.Tensor, is_mod: th.Tensor, mod_coef: th.Tensor) -> th.Tensor:
+    X_not_mod, X_is_mod = X[..., not_mod], X[..., is_mod]
+    X_modulo = th.cat([X_not_mod, th.sin(X_is_mod * mod_coef), th.cos(X_is_mod * mod_coef)], dim=-1)
+    return X_modulo
 
 
-def tensor_modulo_partial_shuffle(x: th.Tensor, not_mod: th.Tensor, is_mod: th.Tensor) -> th.Tensor:
-    x_not_mod, x_is_mod = x[..., not_mod], x[..., is_mod]
-    x_modulo = th.cat([x_not_mod, x_is_mod, x_is_mod], dim=-1)
-    return x_modulo
+def tensor_modulo_partial_shuffle(X: th.Tensor, not_mod: th.Tensor, is_mod: th.Tensor) -> th.Tensor:
+    X_not_mod, X_is_mod = X[..., not_mod], X[..., is_mod]
+    X_modulo = th.cat([X_not_mod, X_is_mod, X_is_mod], dim=-1)
+    return X_modulo

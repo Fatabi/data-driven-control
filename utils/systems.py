@@ -27,27 +27,26 @@ class ControlledCartPole(nn.Module):
         super().__init__()
         self.u = u  # controller (nn.Module)
 
-        p = inertia * (M + m) + M * m * length**2  # denominator for the A and B matrices
+        # Taken from the link below:
+        # https://ctms.engin.umich.edu/CTMS/index.php?example=InvertedPendulum&section=SystemModeling
+        self.m2_l2_g = m**2 * length**2 * g
+        self.inertia_plus_m_l2 = inertia + m * length**2
+        self.m_l = m * length
+        self.b = b
+        self.M_plus_m = M + m
+        self.M2_l2 = M**2 * length**2
+        self.g = g
 
-        self.register_buffer(
-            "A",
-            th.tensor(
-                [
-                    [0, 1, 0, 0],
-                    [0, -(inertia + m * length**2) * b / p, (m**2 * g * length**2) / p, 0],
-                    [0, 0, 0, 1],
-                    [0, -(m * length * b) / p, m * g * length * (M + m) / p, 0],
-                ]
-            ),
-        )
-        self.A: th.Tensor
-        self.register_buffer("B", th.tensor([[0, (inertia + m * length**2) / p, 0, m * length / p]]))
-        self.B: th.Tensor
-
-    def forward(self, t: th.Tensor, x: th.Tensor) -> th.Tensor:
-        cur_u = self.u(t, x)
-        cur_f = th.matmul(x, self.A.T).T.permute([1, 0]) + th.matmul(cur_u, self.B)
-        return cur_f
+    def forward(self, t: th.Tensor, X: th.Tensor) -> th.Tensor:
+        x, x_dot, theta, theta_dot = X[..., 0], X[..., 1], X[..., 2], X[..., 3]
+        F = self.u(t, X)
+        x_dot_dot = (
+            self.m2_l2_g * th.sin(2 * theta) / 2
+            + self.inertia_plus_m_l2 * (self.m_l * theta_dot**2 * th.sin(theta) - self.b * x + F)
+        ) / (self.inertia_plus_m_l2 * self.M_plus_m - self.M2_l2 * th.cos(theta) ** 2)
+        theta_dot_dot = -self.m_l * (self.g * th.sin(theta) + x_dot_dot * th.cos(theta)) / self.inertia_plus_m_l2
+        X_dot = th.cat([x_dot, x_dot_dot, theta_dot, theta_dot_dot], dim=-1)
+        return X_dot
 
 
 class ControlledPendulum(nn.Module):
@@ -73,9 +72,9 @@ class ControlledPendulum(nn.Module):
         self.u = u  # controller (nn.Module)
         self.m, self.k, self.l, self.qr, self.β, self.g = m, k, length, qr, β, g  # physics
 
-    def forward(self, t: th.Tensor, x: th.Tensor) -> th.Tensor:
-        q, p = x[..., :1], x[..., 1:]
-        cur_u = self.u(t, x)
+    def forward(self, t: th.Tensor, X: th.Tensor) -> th.Tensor:
+        q, p = X[..., :1], X[..., 1:]
+        cur_u = self.u(t, X)
         dq = p / self.m
         dp = -self.k * (q - self.qr) - self.m * self.g * self.l * th.sin(q) - self.β * p / self.m + cur_u
         cur_f = th.cat([dq, dp], -1)

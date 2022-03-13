@@ -17,7 +17,7 @@ from utils.systems import ControlledPendulum
 device = th.device("cuda:0") if th.cuda.is_available() else th.device("cpu")
 
 # Loss function declaration
-x_star = th.Tensor([0.0, 0.0]).to(device)
+X_star = th.Tensor([0.0, 0.0]).to(device)
 # Time span
 t0, tf = 0, 2  # initial and final time for controlling the system
 steps = 10 * (tf - t0) + 1  # so we have a time step of 0.1s
@@ -32,7 +32,7 @@ bs = 1024
 
 # The controller is a simple MLP with one hidden layer with bounded output
 u = NeuralController(
-    x_star=x_star,
+    X_star=X_star,
     state_dim=ControlledPendulum.STATE_DIM,
     control_dim=ControlledPendulum.CONTROL_DIM,
     hidden_dims=[32],
@@ -43,7 +43,7 @@ sys = ControlledPendulum(u=u).to(device)
 opt = th.optim.Adam(u.parameters(), lr=lr)
 
 cost_func = DiscreteCost(
-    x_star=x_star, control_dim=ControlledPendulum.CONTROL_DIM, t0=t_span[0], tf=t_span[-1], modulo=ControlledPendulum.MODULO
+    X_star=X_star, control_dim=ControlledPendulum.CONTROL_DIM, t0=t_span[0], tf=t_span[-1], modulo=ControlledPendulum.MODULO
 )
 # Training loop
 t0 = time.time()

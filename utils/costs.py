@@ -9,7 +9,7 @@ from utils.functions import get_modulo_parameters, tensor_encode_modulo_partial,
 class DiscreteCost(nn.Module):
     """Discrete cost function
     Args:
-        x_star: th.tensor, target position
+        X_star: th.tensor, target position
         P: float, terminal cost weights
         Q: float, state weights
         R: float, controller regulator weights
@@ -17,7 +17,7 @@ class DiscreteCost(nn.Module):
 
     def __init__(
         self,
-        x_star: th.Tensor,
+        X_star: th.Tensor,
         control_dim: int,
         t0: float,
         tf: float,
@@ -31,7 +31,7 @@ class DiscreteCost(nn.Module):
         self.u = u  # controller (nn.Module)
         self.t0 = t0
         self.tf = tf
-        state_dim = x_star.nelement()
+        state_dim = X_star.nelement()
 
         if modulo is None:
             modulo = th.tensor([float("nan")] * state_dim)
@@ -61,22 +61,22 @@ class DiscreteCost(nn.Module):
         self.register_buffer("R", R, persistent=False)
         self.R: th.Tensor
 
-        x_star = tensor_encode_modulo_partial(x_star, not_mod, is_mod, mod_coef)
-        self.register_buffer("x_star", x_star)
-        self.x_star: th.Tensor
+        X_star = tensor_encode_modulo_partial(X_star, not_mod, is_mod, mod_coef)
+        self.register_buffer("X_star", X_star)
+        self.X_star: th.Tensor
 
-    def forward(self, t: th.Tensor, x: th.Tensor):
+    def forward(self, t: th.Tensor, X: th.Tensor):
         """
         t: traversed timestamps (t_span)
-        x: trajectory with shape (t_span, batch_size, state_dim)
+        X: trajectory with shape (t_span, batch_size, state_dim)
         u: control input (t_span, batch_size, control_dim)
         """
-        x = tensor_encode_modulo_partial(x, self.not_mod, self.is_mod, self.mod_coef)
+        X = tensor_encode_modulo_partial(X, self.not_mod, self.is_mod, self.mod_coef)
         decay_factor = ((t - self.t0) / (self.tf - self.t0)).clamp(0.0, 1.0)
         decay_factor_normalized = decay_factor.mul(len(t) / decay_factor.sum()).unsqueeze(-1)
-        cost = (x[-1] - self.x_star).mul(self.P).norm(p=2, dim=-1).mean()
-        cost += (x - self.x_star).mul(self.Q).norm(p=2, dim=-1).mul(decay_factor_normalized).mean()
+        cost = (X[-1] - self.X_star).mul(self.P).norm(p=1, dim=-1).mean()
+        cost += (X - self.X_star).mul(self.Q).norm(p=1, dim=-1).mul(decay_factor_normalized).mean()
         if self.u is not None:
-            cur_u = self.u(t, x)
-            cost += (cur_u - 0).mul(self.R).norm(p=2, dim=-1).mul(decay_factor_normalized).mean()
+            cur_u = self.u(t, X)
+            cost += (cur_u - 0).mul(self.R).norm(p=1, dim=-1).mul(decay_factor_normalized).mean()
         return cost

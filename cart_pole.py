@@ -25,7 +25,7 @@ th.set_default_dtype(th.float64)
 class CartPoleModel(pl.LightningModule):
     def __init__(
         self,
-        x_star: th.Tensor,
+        X_star: th.Tensor,
         t_span: th.Tensor,
         max_epochs: int,
         lr: float = 1e-3,
@@ -36,7 +36,7 @@ class CartPoleModel(pl.LightningModule):
     ):
         super().__init__()
         u = NeuralController(
-            x_star=x_star,
+            X_star=X_star,
             state_dim=ControlledCartPole.STATE_DIM,
             control_dim=ControlledCartPole.CONTROL_DIM,
             hidden_dims=[64, 64],
@@ -50,7 +50,7 @@ class CartPoleModel(pl.LightningModule):
         self.max_epochs = max_epochs
         self.lr = lr
         self.cost_func = DiscreteCost(
-            x_star=x_star,
+            X_star=X_star,
             control_dim=ControlledCartPole.CONTROL_DIM,
             t0=t_span[0],
             tf=t_span[-1],
@@ -62,7 +62,7 @@ class CartPoleModel(pl.LightningModule):
 
     def configure_optimizers(self):
         optim = Adam(self.parameters(), lr=self.lr, betas=(0.8, 0.99))
-        sched = ReduceLROnPlateau(optim, "min", 0.5, 3)
+        sched = ReduceLROnPlateau(optim, "min", 0.25, 2)
         return {"optimizer": optim, "lr_scheduler": sched, "monitor": "train_loss"}
 
     def forward(self, x0: th.Tensor, t_span: Optional[th.Tensor] = None) -> th.Tensor:
@@ -109,7 +109,7 @@ class CartPoleModel(pl.LightningModule):
 if __name__ == "__main__":
     pl.seed_everything(1234)
     # Loss function declaration
-    x_star = th.Tensor([0.0, 0.0, pi, 0.0])
+    X_star = th.Tensor([0.0, 0.0, pi, 0.0])
 
     # Time span
     t0, tf = 0, 4  # initial and final time for controlling the system
@@ -121,12 +121,12 @@ if __name__ == "__main__":
     batch_size = 128
     Q = th.tensor([1.0, 1.0, 2.0, 1.0])
     # Initial distribution
-    lb = [-0.1, -0.0001, 3 * pi / 4, -pi / 64]
-    ub = [0.1, 0.0001, 5 * pi / 4, pi / 64]
+    lb = [-0.05, -0.05, pi - 0.05, -0.05]
+    ub = [0.05, 0.05, pi + 0.05, 0.05]
     train_dataset = IcDataset(lb=lb, ub=ub, ic_cnt=batch_size * 6)
     val_dataset = IcDataset(lb=lb, ub=ub, ic_cnt=batch_size)
 
-    model = CartPoleModel(x_star=x_star, t_span=t_span, max_epochs=max_epochs, lr=lr, Q=Q)
+    model = CartPoleModel(X_star=X_star, t_span=t_span, max_epochs=max_epochs, lr=lr, Q=Q)
     trainer = pl.Trainer(
         gpus=[0], max_epochs=max_epochs, log_every_n_steps=2, callbacks=[GradientAccumulationScheduler({max_epochs // 2: 2})]
     )
