@@ -1,4 +1,3 @@
-from math import pi
 from typing import Optional, Tuple
 
 import matplotlib.pyplot as plt
@@ -17,7 +16,7 @@ from utils.controllers import NeuralController
 from utils.costs import DiscreteCost
 from utils.datasets import IcDataset
 from utils.regularizers import IntegralWReg
-from utils.systems import ControlledCartPole
+from utils.systems import ControlledCartPoleV1
 
 th.set_default_dtype(th.float64)
 plt.ioff()
@@ -38,13 +37,13 @@ class CartPoleModel(pl.LightningModule):
         super().__init__()
         u = NeuralController(
             X_star=X_star,
-            state_dim=ControlledCartPole.STATE_DIM,
-            control_dim=ControlledCartPole.CONTROL_DIM,
+            state_dim=ControlledCartPoleV1.STATE_DIM,
+            control_dim=ControlledCartPoleV1.CONTROL_DIM,
             hidden_dims=[32],
-            modulo=ControlledCartPole.MODULO,
+            modulo=ControlledCartPoleV1.MODULO,
         )
         # Controlled system
-        sys = ControlledCartPole(u=u)
+        sys = ControlledCartPoleV1(u=u)
         self.sys = ODEProblem(sys, solver="dopri5", sensitivity="autograd", integral_loss=IntegralWReg(sys, reg_coef))
         self.register_buffer("t_span", t_span, persistent=False)
         self.t_span: th.Tensor
@@ -52,13 +51,13 @@ class CartPoleModel(pl.LightningModule):
         self.lr = lr
         self.cost_func = DiscreteCost(
             X_star=X_star,
-            control_dim=ControlledCartPole.CONTROL_DIM,
+            control_dim=ControlledCartPoleV1.CONTROL_DIM,
             t0=t_span[0],
             tf=t_span[-1],
             P=P,
             Q=Q,
             R=R,
-            # modulo=ControlledCartPole.MODULO,
+            # modulo=ControlledCartPoleV1.MODULO,
         )
 
     def configure_optimizers(self):
@@ -110,21 +109,21 @@ class CartPoleModel(pl.LightningModule):
 if __name__ == "__main__":
     pl.seed_everything(1234)
     # Loss function declaration
-    X_star = th.Tensor([0.0, 0.0, pi, 0.0])
+    X_star = th.Tensor([0.0, 0.0, 0.0, 0.0])
 
     # Time span
     t0, tf = 0, 2  # initial and final time for controlling the system
     steps = 100 * (tf - t0) + 1  # so we have a time step of 0.01s
     t_span = th.linspace(t0, tf, steps)
     # Hyperparameters
-    lr = 1e-2
+    lr = 1e-3
     reg_coef = 0.0
     max_epochs = 300
     batch_size = 128
     Q = th.tensor([1.0, 1.0, 2.0, 1.0])
     # Initial distribution
-    lb = [-0.05, -0.05, pi - 0.05, -0.05]
-    ub = [0.05, 0.05, pi + 0.05, 0.05]
+    lb = [-0.05, -0.05, -0.05, -0.05]
+    ub = [0.05, 0.05, 0.05, 0.05]
     train_dataset = IcDataset(lb=lb, ub=ub, ic_cnt=batch_size * 6)
     val_dataset = IcDataset(lb=lb, ub=ub, ic_cnt=batch_size)
 

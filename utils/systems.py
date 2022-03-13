@@ -49,6 +49,50 @@ class ControlledCartPole(nn.Module):
         return X_dot
 
 
+class ControlledCartPoleV1(nn.Module):
+    """
+    Cart pole with a pendulum attached on it. Taken from:
+    https://github.com/openai/gym/blob/6eec83cebb622b7e89d0465cd5bac57fd868c3d6/gym/envs/classic_control/cartpole.py
+    """
+
+    STATE_DIM = 4
+    CONTROL_DIM = 1
+    MODULO = th.tensor([float("nan"), float("nan"), 2 * pi, float("nan")])
+
+    def __init__(
+        self,
+        u: Callable[[th.Tensor, th.Tensor, th.Tensor], th.Tensor],
+        M: float = 0.5,
+        m: float = 0.2,
+        g: float = 9.81,
+        length: float = 0.3,
+    ):
+        super().__init__()
+        self.u = u  # controller (nn.Module)
+
+        self.gravity = g
+        self.masscart = M
+        self.masspole = m
+        self.total_mass = self.masspole + self.masscart
+        self.length = length  # actually half the pole's length
+        self.polemass_length = self.masspole * self.length
+
+    def forward(self, t: th.Tensor, X: th.Tensor) -> th.Tensor:
+        x, x_dot, theta, theta_dot = X[..., 0:1], X[..., 1:2], X[..., 2:3], X[..., 3:4]  # noqa: F841
+        F = self.u(t, X)
+        costheta = th.cos(theta)
+        sintheta = th.sin(theta)
+        # For the interested reader:
+        # https://coneural.org/florian/papers/05_cart_pole.pdf
+        temp = (F + self.polemass_length * theta_dot ** 2 * sintheta) / self.total_mass
+        theta_dot_dot = (self.gravity * sintheta - costheta * temp) / (
+            self.length * (4.0 / 3.0 - self.masspole * costheta ** 2 / self.total_mass)
+        )
+        x_dot_dot = temp - self.polemass_length * theta_dot_dot * costheta / self.total_mass
+        X_dot = th.cat([x_dot, x_dot_dot, theta_dot, theta_dot_dot], dim=-1)
+        return X_dot
+
+
 class ControlledPendulum(nn.Module):
     """
     Inverted pendulum with torsional spring
