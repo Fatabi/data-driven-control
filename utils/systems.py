@@ -29,20 +29,20 @@ class ControlledCartPole(nn.Module):
 
         # Taken from the link below:
         # https://ctms.engin.umich.edu/CTMS/index.php?example=InvertedPendulum&section=SystemModeling
-        self.m2_l2_g = m**2 * length**2 * g
-        self.inertia_plus_m_l2 = inertia + m * length**2
+        self.m2_l2_g = m ** 2 * length ** 2 * g
+        self.inertia_plus_m_l2 = inertia + m * length ** 2
         self.m_l = m * length
         self.b = b
         self.M_plus_m = M + m
-        self.M2_l2 = M**2 * length**2
+        self.M2_l2 = M ** 2 * length ** 2
         self.g = g
 
     def forward(self, t: th.Tensor, X: th.Tensor) -> th.Tensor:
-        x, x_dot, theta, theta_dot = X[..., 0], X[..., 1], X[..., 2], X[..., 3]
+        x, x_dot, theta, theta_dot = X[..., 0:1], X[..., 1:2], X[..., 2:3], X[..., 3:4]
         F = self.u(t, X)
         x_dot_dot = (
             self.m2_l2_g * th.sin(2 * theta) / 2
-            + self.inertia_plus_m_l2 * (self.m_l * theta_dot**2 * th.sin(theta) - self.b * x + F)
+            + self.inertia_plus_m_l2 * (self.m_l * theta_dot ** 2 * th.sin(theta) - self.b * x + F)
         ) / (self.inertia_plus_m_l2 * self.M_plus_m - self.M2_l2 * th.cos(theta) ** 2)
         theta_dot_dot = -self.m_l * (self.g * th.sin(theta) + x_dot_dot * th.cos(theta)) / self.inertia_plus_m_l2
         X_dot = th.cat([x_dot, x_dot_dot, theta_dot, theta_dot_dot], dim=-1)
