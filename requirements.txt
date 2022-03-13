@@ -4,3 +4,4 @@ pandas==1.4.1
 pytorch-lightning==1.5.10
 torch==1.10.2
 torchdyn==1.0.1
+# git+git://github.com/DiffEqML/torchdyn.git@de96bff782ab8437fed184ab0e7242b178c6fbef

@@ -1,5 +1,5 @@
 from math import pi
-from typing import Optional
+from typing import Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,6 +20,7 @@ from utils.regularizers import IntegralWReg
 from utils.systems import ControlledCartPole
 
 th.set_default_dtype(th.float64)
+plt.ioff()
 
 
 class CartPoleModel(pl.LightningModule):
@@ -39,7 +40,7 @@ class CartPoleModel(pl.LightningModule):
             X_star=X_star,
             state_dim=ControlledCartPole.STATE_DIM,
             control_dim=ControlledCartPole.CONTROL_DIM,
-            hidden_dims=[64, 64],
+            hidden_dims=[32],
             modulo=ControlledCartPole.MODULO,
         )
         # Controlled system
@@ -65,11 +66,11 @@ class CartPoleModel(pl.LightningModule):
         sched = ReduceLROnPlateau(optim, "min", 0.25, 2)
         return {"optimizer": optim, "lr_scheduler": sched, "monitor": "train_loss"}
 
-    def forward(self, x0: th.Tensor, t_span: Optional[th.Tensor] = None) -> th.Tensor:
+    def forward(self, x0: th.Tensor, t_span: Optional[th.Tensor] = None) -> Tuple[th.Tensor, th.Tensor]:
         if t_span is None:
             t_span = self.t_span
-        _, traj = self.sys.odeint(x0, t_span)
-        return traj
+        traj_t, traj = self.sys.odeint(x0, t_span)
+        return traj_t, traj
 
     def training_step(self, batch: th.Tensor, batch_idx: int) -> th.Tensor:
         x0 = batch
@@ -84,9 +85,9 @@ class CartPoleModel(pl.LightningModule):
         tensorboard: SummaryWriter = self.logger.experiment
         x0 = batch
         t0, tf = self.t_span[0].item(), self.t_span[-1].item()  # initial and final time for controlling the system
-        steps = 40 * int(np.round(tf - t0)) + 1  # so we have a time step of 0.1s
+        steps = 100 * int(np.round(tf - t0)) + 1  # so we have a time step of 0.01s
         t_span_fine = th.linspace(t0, tf, steps).to(model.device)
-        traj = self.forward(x0, t_span=t_span_fine)
+        t_span_fine, traj = self.forward(x0, t_span=t_span_fine)
         t_span_fine = t_span_fine.detach().cpu()
         traj = traj.detach().cpu()
 
@@ -112,11 +113,12 @@ if __name__ == "__main__":
     X_star = th.Tensor([0.0, 0.0, pi, 0.0])
 
     # Time span
-    t0, tf = 0, 4  # initial and final time for controlling the system
-    steps = 10 * (tf - t0) + 1  # so we have a time step of 0.1s
+    t0, tf = 0, 2  # initial and final time for controlling the system
+    steps = 100 * (tf - t0) + 1  # so we have a time step of 0.01s
     t_span = th.linspace(t0, tf, steps)
     # Hyperparameters
     lr = 1e-2
+    reg_coef = 0.0
     max_epochs = 300
     batch_size = 128
     Q = th.tensor([1.0, 1.0, 2.0, 1.0])
@@ -126,7 +128,7 @@ if __name__ == "__main__":
     train_dataset = IcDataset(lb=lb, ub=ub, ic_cnt=batch_size * 6)
     val_dataset = IcDataset(lb=lb, ub=ub, ic_cnt=batch_size)
 
-    model = CartPoleModel(X_star=X_star, t_span=t_span, max_epochs=max_epochs, lr=lr, Q=Q)
+    model = CartPoleModel(X_star=X_star, t_span=t_span, max_epochs=max_epochs, lr=lr, reg_coef=reg_coef, Q=Q)
     trainer = pl.Trainer(
         gpus=[0], max_epochs=max_epochs, log_every_n_steps=2, callbacks=[GradientAccumulationScheduler({max_epochs // 2: 2})]
     )
@@ -137,9 +139,9 @@ if __name__ == "__main__":
     # Testing the controller on the real system
     x0 = train_dataset.init_dist.sample((100,)).to(model.device)
     t0, tf = 0, 4  # initial and final time for controlling the system
-    steps = 40 * (tf - t0) + 1  # so we have a time step of 0.1s
+    steps = 100 * (tf - t0) + 1  # so we have a time step of 0.01s
     t_span_fine = th.linspace(t0, tf, steps).to(model.device)
-    traj = model.forward(x0, t_span=t_span_fine)
+    t_span_fine, traj = model.forward(x0, t_span=t_span_fine)
     t_span_fine = t_span_fine.detach().cpu()
     traj = traj.detach().cpu()
 
