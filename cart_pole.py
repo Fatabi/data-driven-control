@@ -1,3 +1,4 @@
+from math import pi
 from typing import Optional, Tuple
 
 import matplotlib.pyplot as plt
@@ -39,7 +40,7 @@ class CartPoleModel(pl.LightningModule):
             X_star=X_star,
             state_dim=ControlledCartPoleV1.STATE_DIM,
             control_dim=ControlledCartPoleV1.CONTROL_DIM,
-            hidden_dims=[32],
+            hidden_dims=[32, 32, 32],
             modulo=ControlledCartPoleV1.MODULO,
         )
         # Controlled system
@@ -61,7 +62,7 @@ class CartPoleModel(pl.LightningModule):
         )
 
     def configure_optimizers(self):
-        optim = Adam(self.parameters(), lr=self.lr, betas=(0.8, 0.99))
+        optim = Adam(self.parameters(), lr=self.lr, betas=(0.5, 0.99))
         sched = ReduceLROnPlateau(optim, "min", 0.25, 2)
         return {"optimizer": optim, "lr_scheduler": sched, "monitor": "train_loss"}
 
@@ -116,18 +117,19 @@ if __name__ == "__main__":
     steps = 100 * (tf - t0) + 1  # so we have a time step of 0.01s
     t_span = th.linspace(t0, tf, steps)
     # Hyperparameters
-    lr = 1e-3
+    lr = 1e-2
     reg_coef = 0.0
     max_epochs = 300
-    batch_size = 128
-    Q = th.tensor([1.0, 1.0, 2.0, 1.0])
+    batch_size = 512
+    P = th.tensor([0.001, 0.0, 10.0, 0.0])
+    Q = th.tensor([0.0, 0.0, 0.0, 0.0])
     # Initial distribution
-    lb = [-0.05, -0.05, -0.05, -0.05]
-    ub = [0.05, 0.05, 0.05, 0.05]
+    lb = [-0.05, -0.05, -pi, -0.05]
+    ub = [0.05, 0.05, pi, 0.05]
     train_dataset = IcDataset(lb=lb, ub=ub, ic_cnt=batch_size * 6)
     val_dataset = IcDataset(lb=lb, ub=ub, ic_cnt=batch_size)
 
-    model = CartPoleModel(X_star=X_star, t_span=t_span, max_epochs=max_epochs, lr=lr, reg_coef=reg_coef, Q=Q)
+    model = CartPoleModel(X_star=X_star, t_span=t_span, max_epochs=max_epochs, lr=lr, reg_coef=reg_coef, P=P, Q=Q)
     trainer = pl.Trainer(
         gpus=[0], max_epochs=max_epochs, log_every_n_steps=2, callbacks=[GradientAccumulationScheduler({max_epochs // 2: 2})]
     )
