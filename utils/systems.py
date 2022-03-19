@@ -29,12 +29,12 @@ class ControlledCartPole(nn.Module):
 
         # Taken from the link below:
         # https://ctms.engin.umich.edu/CTMS/index.php?example=InvertedPendulum&section=SystemModeling
-        self.m2_l2_g = m ** 2 * length ** 2 * g
-        self.inertia_plus_m_l2 = inertia + m * length ** 2
+        self.m2_l2_g = m**2 * length**2 * g
+        self.inertia_plus_m_l2 = inertia + m * length**2
         self.m_l = m * length
         self.b = b
         self.M_plus_m = M + m
-        self.M2_l2 = M ** 2 * length ** 2
+        self.M2_l2 = M**2 * length**2
         self.g = g
 
     def forward(self, t: th.Tensor, X: th.Tensor) -> th.Tensor:
@@ -42,7 +42,7 @@ class ControlledCartPole(nn.Module):
         F = self.u(t, X)
         x_dot_dot = (
             self.m2_l2_g * th.sin(2 * theta) / 2
-            + self.inertia_plus_m_l2 * (self.m_l * theta_dot ** 2 * th.sin(theta) - self.b * x_dot + F)
+            + self.inertia_plus_m_l2 * (self.m_l * theta_dot**2 * th.sin(theta) - self.b * x_dot + F)
         ) / (self.inertia_plus_m_l2 * self.M_plus_m - self.M2_l2 * th.cos(theta) ** 2)
         theta_dot_dot = -self.m_l * (self.g * th.sin(theta) + x_dot_dot * th.cos(theta)) / self.inertia_plus_m_l2
         X_dot = th.cat([x_dot, x_dot_dot, theta_dot, theta_dot_dot], dim=-1)
@@ -84,9 +84,9 @@ class ControlledCartPoleV1(nn.Module):
         sintheta = th.sin(theta)
         # For the interested reader:
         # https://coneural.org/florian/papers/05_cart_pole.pdf
-        temp = (F + self.polemass_length * theta_dot ** 2 * sintheta) / self.total_mass
+        temp = (F + self.polemass_length * theta_dot**2 * sintheta) / self.total_mass
         theta_dot_dot = (self.gravity * sintheta - costheta * temp) / (
-            self.length * (4.0 / 3.0 - self.masspole * costheta ** 2 / self.total_mass)
+            self.length * (4.0 / 3.0 - self.masspole * costheta**2 / self.total_mass)
         )
         x_dot_dot = temp - self.polemass_length * theta_dot_dot * costheta / self.total_mass
         X_dot = th.cat([x_dot, x_dot_dot, theta_dot, theta_dot_dot], dim=-1)
@@ -94,6 +94,7 @@ class ControlledCartPoleV1(nn.Module):
 
 
 class ControlledPendulum(nn.Module):
+
     """
     Inverted pendulum with torsional spring
     """
@@ -123,3 +124,37 @@ class ControlledPendulum(nn.Module):
         dp = -self.k * (q - self.qr) - self.m * self.g * self.l * th.sin(q) - self.β * p / self.m + cur_u
         cur_f = th.cat([dq, dp], -1)
         return cur_f
+
+
+class Controlled3DOFAircraft(nn.Module):
+    """
+    Cart pole with a pendulum attached on it.
+    """
+
+    STATE_DIM = 3
+    CONTROL_DIM = 1
+    MODULO = th.tensor([2 * pi, float("nan"), 2 * pi])
+
+    def __init__(
+        self,
+        u: Callable[[th.Tensor, th.Tensor, th.Tensor], th.Tensor],
+    ):
+        super().__init__()
+        self.u = u  # controller (nn.Module)
+        self.register_buffer("A", th.tensor([[-0.313, 56.7, 0], [-0.0139, -0.426, 0], [0, 56.7, 0]]), persistent=False)
+        self.A: th.Tensor
+
+        self.register_buffer("B", th.tensor([[0.232], [0.0203], [0]]), persistent=False)
+        self.B: th.Tensor
+
+        self.register_buffer("C", th.tensor([0, 0, 1]), persistent=False)
+        self.C: th.Tensor
+
+        self.register_buffer("D", th.tensor([0]), persistent=False)
+        self.D: th.Tensor
+
+    def forward(self, t: th.Tensor, X: th.Tensor) -> th.Tensor:
+        F = self.u(t, X)
+
+        X_dot = th.matmul(self.A, X.T).T + th.matmul(self.B, F.T).T
+        return X_dot
