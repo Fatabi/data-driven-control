@@ -143,18 +143,10 @@ class Controlled3DOFAircraft(nn.Module):
         self.u = u  # controller (nn.Module)
         self.register_buffer("A", th.tensor([[-0.313, 56.7, 0], [-0.0139, -0.426, 0], [0, 56.7, 0]]), persistent=False)
         self.A: th.Tensor
-
         self.register_buffer("B", th.tensor([[0.232], [0.0203], [0]]), persistent=False)
         self.B: th.Tensor
 
-        self.register_buffer("C", th.tensor([0, 0, 1]), persistent=False)
-        self.C: th.Tensor
-
-        self.register_buffer("D", th.tensor([0]), persistent=False)
-        self.D: th.Tensor
-
     def forward(self, t: th.Tensor, X: th.Tensor) -> th.Tensor:
         F = self.u(t, X)
-
         X_dot = th.matmul(self.A, X.T).T + th.matmul(self.B, F.T).T
         return X_dot
